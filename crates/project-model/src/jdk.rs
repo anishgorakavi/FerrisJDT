@@ -1,0 +1,182 @@
+//! Locates a JDK and the archive that holds its standard library.
+//!
+//! No JVM is ever started. A JDK 8 layout exposes the whole library as
+//! `jre/lib/rt.jar`, which is an ordinary JAR of class files. JDK 9 and later
+//! replaced it with a `jimage` container that is not a ZIP, but they ship
+//! `lib/ct.sym` — the archive `javac --release` reads — which does contain
+//! per-release class files and is a ZIP, so it serves as the fallback.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StdlibSource {
+    /// A JDK 8 `rt.jar`: entries are `java/util/List.class`.
+    RtJar(PathBuf),
+    /// A JDK 9+ `ct.sym`: entries are `<releases>/java/util/List.sig`, where
+    /// `releases` is a string of base-36 release characters (`8` is "8", 17 is "H").
+    CtSym { path: PathBuf, release: u32 },
+}
+
+impl StdlibSource {
+    pub fn path(&self) -> &Path {
+        match self {
+            StdlibSource::RtJar(p) => p,
+            StdlibSource::CtSym { path, .. } => path,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Jdk {
+    pub home: PathBuf,
+    pub stdlib: StdlibSource,
+    /// `src.zip`, when present: the source of javadoc and parameter names for
+    /// standard library members, which class files do not carry.
+    pub sources: Option<PathBuf>,
+}
+
+/// Finds the standard library inside a JDK home for the requested release.
+pub fn stdlib_in(home: &Path, release: u32) -> Option<StdlibSource> {
+    for candidate in [home.join("jre/lib/rt.jar"), home.join("lib/rt.jar")] {
+        if candidate.is_file() {
+            return Some(StdlibSource::RtJar(candidate));
+        }
+    }
+    let ct_sym = home.join("lib/ct.sym");
+    if ct_sym.is_file() {
+        return Some(StdlibSource::CtSym {
+            path: ct_sym,
+            release,
+        });
+    }
+    None
+}
+
+fn sources_in(home: &Path) -> Option<PathBuf> {
+    [home.join("src.zip"), home.join("lib/src.zip")]
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+}
+
+fn jdk_at(home: &Path, release: u32) -> Option<Jdk> {
+    let stdlib = stdlib_in(home, release)?;
+    Some(Jdk {
+        home: home.to_path_buf(),
+        stdlib,
+        sources: sources_in(home),
+    })
+}
+
+/// Searches for a JDK, preferring one whose own release matches `release`
+/// (so a Java 8 project reads a real `rt.jar` when one is installed).
+///
+/// Order: the explicit override, `JAVA_HOME`, `/usr/libexec/java_home` on
+/// macOS, then conventional Linux install directories.
+pub fn discover(explicit: Option<&Path>, release: u32) -> Option<Jdk> {
+    if let Some(home) = explicit {
+        if let Some(jdk) = jdk_at(home, release) {
+            return Some(jdk);
+        }
+        tracing::warn!(path = %home.display(), "configured jdkHome has no readable standard library");
+    }
+
+    let mut fallback: Option<Jdk> = None;
+    let mut consider = |home: &Path, exact: bool| -> Option<Jdk> {
+        let jdk = jdk_at(home, release)?;
+        let is_rt_jar = matches!(jdk.stdlib, StdlibSource::RtJar(_));
+        // An rt.jar from the requested release is the best possible match.
+        if exact && is_rt_jar {
+            return Some(jdk);
+        }
+        if fallback.is_none() {
+            fallback = Some(jdk);
+        }
+        None
+    };
+
+    // `java_home -v <release>` asks macOS for that exact release.
+    if cfg!(target_os = "macos") {
+        let version = if release == 8 {
+            "1.8".to_string()
+        } else {
+            release.to_string()
+        };
+        if let Some(home) = java_home_tool(Some(&version)) {
+            if let Some(jdk) = consider(&home, true) {
+                return Some(jdk);
+            }
+        }
+    }
+    if let Some(home) = std::env::var_os("JAVA_HOME") {
+        let home = PathBuf::from(home);
+        let exact = home_looks_like_release(&home, release);
+        if let Some(jdk) = consider(&home, exact) {
+            return Some(jdk);
+        }
+    }
+    if cfg!(target_os = "macos") {
+        if let Some(home) = java_home_tool(None) {
+            if let Some(jdk) = consider(&home, false) {
+                return Some(jdk);
+            }
+        }
+    }
+    for root in ["/usr/lib/jvm", "/usr/java", "/opt/java"] {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        let mut homes: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        homes.sort();
+        for home in homes {
+            let exact = home_looks_like_release(&home, release);
+            if let Some(jdk) = consider(&home, exact) {
+                return Some(jdk);
+            }
+        }
+    }
+    fallback
+}
+
+fn home_looks_like_release(home: &Path, release: u32) -> bool {
+    let name = home.to_string_lossy();
+    if release == 8 {
+        name.contains("1.8") || name.contains("-8") || name.contains("jdk8") || name.contains("@8")
+    } else {
+        name.contains(&format!("-{release}"))
+            || name.contains(&format!("@{release}"))
+            || name.contains(&format!("jdk{release}"))
+            || name.contains(&format!("{release}."))
+    }
+}
+
+/// Runs macOS's `java_home`, which only reports installed JDK locations and
+/// never executes project code.
+fn java_home_tool(version: Option<&str>) -> Option<PathBuf> {
+    let tool = Path::new("/usr/libexec/java_home");
+    if !tool.is_file() {
+        return None;
+    }
+    let mut command = Command::new(tool);
+    if let Some(version) = version {
+        command.args(["-v", version]);
+    }
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    path.is_dir().then_some(path)
+}
+
+/// Encodes a release number the way `ct.sym` directory names do: releases are
+/// single base-36 characters, so 8 is `8` and 17 is `H`.
+pub fn ct_sym_release_char(release: u32) -> char {
+    std::char::from_digit(release, 36)
+        .unwrap_or('8')
+        .to_ascii_uppercase()
+}

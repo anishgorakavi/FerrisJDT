@@ -1,0 +1,28 @@
+[package]
+name = "ferrisjdt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "FerrisJDT: a lightweight Java language server"
+
+[[bin]]
+name = "ferrisjdt"
+path = "src/main.rs"
+
+[dependencies]
+java-syntax.workspace = true
+java-semantic.workspace = true
+java-ide.workspace = true
+project-model.workspace = true
+lsp-types.workspace = true
+lsp-server.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rustc-hash.workspace = true
+crossbeam-channel = "0.5"
+
+[dev-dependencies]
+serde_json = "1"
+java-syntax = { path = "../java-syntax" }

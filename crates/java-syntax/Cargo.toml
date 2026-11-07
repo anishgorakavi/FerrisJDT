@@ -1,0 +1,9 @@
+[package]
+name = "java-syntax"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tree-sitter.workspace = true
+tree-sitter-java.workspace = true

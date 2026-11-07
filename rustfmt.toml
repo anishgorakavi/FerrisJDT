@@ -1,0 +1,5 @@
+# Defaults, stated explicitly: four spaces, no tabs, 100 columns.
+hard_tabs = false
+tab_spaces = 4
+max_width = 100
+edition = "2021"

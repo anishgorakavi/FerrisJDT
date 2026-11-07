@@ -1,0 +1,21 @@
+[package]
+name = "java-semantic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+java-syntax.workspace = true
+java-classfile.workspace = true
+project-model.workspace = true
+rustc-hash.workspace = true
+tracing.workspace = true
+serde = { workspace = true }
+
+[features]
+# Test-support helpers for building a database from in-memory files. Enabled by
+# the test targets of this crate and of java-ide; never part of a release build.
+fixture = []
+
+[dev-dependencies]
+java-semantic = { path = ".", features = ["fixture"] }

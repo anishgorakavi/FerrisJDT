@@ -1,0 +1,14 @@
+[package]
+name = "ferrisjdt-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Latency and memory harness for Java language servers"
+publish = false
+
+[[bin]]
+name = "ferrisjdt-bench"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true

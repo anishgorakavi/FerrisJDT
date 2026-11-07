@@ -1,0 +1,19 @@
+[package]
+name = "java-ide"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+java-syntax.workspace = true
+java-classfile.workspace = true
+java-semantic.workspace = true
+project-model.workspace = true
+lsp-types.workspace = true
+rustc-hash.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+java-semantic = { path = "../java-semantic", features = ["fixture"] }
+java-syntax = { path = "../java-syntax" }
+serde_json = "1"
