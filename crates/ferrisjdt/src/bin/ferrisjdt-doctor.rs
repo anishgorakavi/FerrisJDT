@@ -249,7 +249,11 @@ fn check_config(root: &Path, report: &mut Report) -> project_model::Config {
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(error) => {
-            report.add(Level::Warn, "ferrisjdt.json", format!("unreadable: {error}"));
+            report.add(
+                Level::Warn,
+                "ferrisjdt.json",
+                format!("unreadable: {error}"),
+            );
             return project_model::Config::default();
         }
     };
@@ -305,7 +309,11 @@ fn check_jdk(
     if verbose {
         let candidates = jdk::candidate_homes();
         if candidates.is_empty() {
-            report.add(Level::Info, "searched", "no candidate JDK directories exist");
+            report.add(
+                Level::Info,
+                "searched",
+                "no candidate JDK directories exist",
+            );
         }
         let mut rejected = 0usize;
         for (origin, home) in candidates {
@@ -313,7 +321,11 @@ fn check_jdk(
                 Some(source) => report.add(
                     Level::Info,
                     "searched",
-                    format!("[{origin}] {}: usable, {}", home.display(), describe(&source)),
+                    format!(
+                        "[{origin}] {}: usable, {}",
+                        home.display(),
+                        describe(&source)
+                    ),
                 ),
                 // Most entries under a vendor folder are not JDKs at all.
                 None if origin == "JAVA_HOME" || origin == "PATH" => report.add(
@@ -393,7 +405,10 @@ fn check_project(project: &Project, report: &mut Report) {
         report.add_hint(
             Level::Warn,
             "source files",
-            format!("{} (hit the limit; later files are not indexed)", files.len()),
+            format!(
+                "{} (hit the limit; later files are not indexed)",
+                files.len()
+            ),
             "raise \"maxSourceFiles\" or add directories to \"exclude\"",
         );
     } else {
@@ -401,7 +416,11 @@ fn check_project(project: &Project, report: &mut Report) {
     }
 
     if project.classpath.is_empty() {
-        report.add(Level::Info, "extra jars", "none (lib/, libs/, jars/ are scanned)");
+        report.add(
+            Level::Info,
+            "extra jars",
+            "none (lib/, libs/, jars/ are scanned)",
+        );
     } else {
         let unreadable: Vec<String> = project
             .classpath
@@ -474,7 +493,12 @@ fn check_classpath(project: Project, report: &mut Report) {
 fn print_text(root: &Path, report: &Report) {
     println!("ferrisjdt-doctor: {}\n", root.display());
     for check in &report.checks {
-        println!("[{:>4}] {:<17} {}", check.level.tag(), check.name, check.detail);
+        println!(
+            "[{:>4}] {:<17} {}",
+            check.level.tag(),
+            check.name,
+            check.detail
+        );
         if let Some(hint) = &check.hint {
             println!("       {:<17} -> {hint}", "");
         }
@@ -511,7 +535,10 @@ fn print_json(root: &Path, report: &Report) {
         "warnings": report.count(Level::Warn),
         "checks": checks,
     });
-    println!("{}", serde_json::to_string_pretty(&value).unwrap_or_default());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&value).unwrap_or_default()
+    );
 }
 
 /// `canonicalize` yields `\\?\C:\...` on Windows, which reads badly.

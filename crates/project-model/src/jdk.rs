@@ -164,7 +164,12 @@ fn install_roots() -> Vec<PathBuf> {
         .map(PathBuf::from)
         .collect();
     if cfg!(windows) {
-        for var in ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "LOCALAPPDATA"] {
+        for var in [
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "ProgramW6432",
+            "LOCALAPPDATA",
+        ] {
             let Some(base) = std::env::var_os(var) else {
                 continue;
             };
