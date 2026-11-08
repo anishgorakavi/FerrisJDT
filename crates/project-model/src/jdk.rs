@@ -72,7 +72,8 @@ fn jdk_at(home: &Path, release: u32) -> Option<Jdk> {
 /// (so a Java 8 project reads a real `rt.jar` when one is installed).
 ///
 /// Order: the explicit override, `JAVA_HOME`, `/usr/libexec/java_home` on
-/// macOS, then conventional Linux install directories.
+/// macOS, a JDK on `PATH`, then conventional Linux and Windows install
+/// directories.
 pub fn discover(explicit: Option<&Path>, release: u32) -> Option<Jdk> {
     if let Some(home) = explicit {
         if let Some(jdk) = jdk_at(home, release) {
@@ -122,8 +123,46 @@ pub fn discover(explicit: Option<&Path>, release: u32) -> Option<Jdk> {
             }
         }
     }
-    for root in ["/usr/lib/jvm", "/usr/java", "/opt/java"] {
-        let Ok(entries) = std::fs::read_dir(root) else {
+    // A JDK on `PATH` (e.g. `<home>/bin/javac`), for machines with no JAVA_HOME.
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let Some(home) = dir.parent() else { continue };
+            if dir.file_name().is_some_and(|n| n == "bin")
+                && (dir.join("javac").is_file() || dir.join("javac.exe").is_file())
+            {
+                let exact = home_looks_like_release(home, release);
+                if let Some(jdk) = consider(home, exact) {
+                    return Some(jdk);
+                }
+            }
+        }
+    }
+    let mut roots: Vec<PathBuf> = ["/usr/lib/jvm", "/usr/java", "/opt/java"]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+    if cfg!(windows) {
+        for var in ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "LOCALAPPDATA"] {
+            let Some(base) = std::env::var_os(var) else {
+                continue;
+            };
+            let base = PathBuf::from(base);
+            for vendor in [
+                "Java",
+                "Eclipse Adoptium",
+                "Microsoft",
+                "Amazon Corretto",
+                "Zulu",
+                "BellSoft",
+                "Semeru",
+                "Programs/Eclipse Adoptium",
+            ] {
+                roots.push(base.join(vendor));
+            }
+        }
+    }
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(&root) else {
             continue;
         };
         let mut homes: Vec<PathBuf> = entries
