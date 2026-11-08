@@ -11,6 +11,8 @@ rustfmt.toml              Formatting: four spaces, 100 columns, no tabs.
 README.md                 Install, Neovim setup, project configuration, usage.
 ARCHITECTURE.md           Components, the type model, generic substitution, incremental analysis.
 TREE.md                   This map.
+AGENTS.md                 Orientation for coding agents: commands, invariants, type-model gotchas, conventions.
+CLAUDE.md                 Imports AGENTS.md; adds Claude Code specifics.
 FEATURES.md               Implemented, partial, and unsupported, with the tests covering each.
 BENCHMARKS.md             Measurements, methodology, and how to reproduce them.
 LIMITATIONS.md            Semantic gaps, project model gaps, performance characteristics.
