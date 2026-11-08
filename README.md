@@ -66,6 +66,22 @@ ferrisjdt --self-check path/to/your/java/project --verbose
 is the quickest way to see whether your project resolves and where the JDK was
 picked up from.
 
+### Troubleshooting
+
+If standard types such as `String` or `Comparable` are flagged as unrecognized
+symbols, the server almost certainly did not find a JDK. Run the doctor:
+
+```sh
+ferrisjdt-doctor path/to/your/java/project           # human-readable report
+ferrisjdt-doctor path/to/your/java/project --verbose # also list where JDKs were searched
+ferrisjdt-doctor path/to/your/java/project --json    # for scripts and bug reports
+```
+
+It checks the server binary, `JAVA_HOME`, `ferrisjdt.json`, JDK discovery, the
+standard library index, source files and extra JARs, and prints a fix for each
+problem. It exits 1 when a check fails. It is built alongside the server
+(`cargo build --release` puts both in `target/release`).
+
 ## Neovim
 
 The server speaks ordinary LSP over stdin and stdout, so any client can start

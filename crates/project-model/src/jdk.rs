@@ -137,6 +137,28 @@ pub fn discover(explicit: Option<&Path>, release: u32) -> Option<Jdk> {
             }
         }
     }
+    for root in install_roots() {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        let mut homes: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        homes.sort();
+        for home in homes {
+            let exact = home_looks_like_release(&home, release);
+            if let Some(jdk) = consider(&home, exact) {
+                return Some(jdk);
+            }
+        }
+    }
+    fallback
+}
+
+/// Directories whose children are JDK homes.
+fn install_roots() -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = ["/usr/lib/jvm", "/usr/java", "/opt/java"]
         .iter()
         .map(PathBuf::from)
@@ -161,7 +183,33 @@ pub fn discover(explicit: Option<&Path>, release: u32) -> Option<Jdk> {
             }
         }
     }
-    for root in roots {
+    roots
+}
+
+/// Every JDK home the search would look at, labelled by where it came from,
+/// whether or not it holds a usable standard library. For diagnostics.
+pub fn candidate_homes() -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    if let Some(home) = std::env::var_os("JAVA_HOME") {
+        out.push(("JAVA_HOME".to_string(), PathBuf::from(home)));
+    }
+    if cfg!(target_os = "macos") {
+        if let Some(home) = java_home_tool(None) {
+            out.push(("java_home".to_string(), home));
+        }
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            if let Some(home) = dir.parent() {
+                if dir.file_name().is_some_and(|n| n == "bin")
+                    && (dir.join("javac").is_file() || dir.join("javac.exe").is_file())
+                {
+                    out.push(("PATH".to_string(), home.to_path_buf()));
+                }
+            }
+        }
+    }
+    for root in install_roots() {
         let Ok(entries) = std::fs::read_dir(&root) else {
             continue;
         };
@@ -172,13 +220,17 @@ pub fn discover(explicit: Option<&Path>, release: u32) -> Option<Jdk> {
             .collect();
         homes.sort();
         for home in homes {
-            let exact = home_looks_like_release(&home, release);
-            if let Some(jdk) = consider(&home, exact) {
-                return Some(jdk);
-            }
+            out.push((root.display().to_string(), home));
         }
     }
-    fallback
+    // The same directory can be reached through several roots.
+    let mut seen = Vec::new();
+    out.retain(|(_, home)| {
+        let fresh = !seen.contains(home);
+        seen.push(home.clone());
+        fresh
+    });
+    out
 }
 
 fn home_looks_like_release(home: &Path, release: u32) -> bool {
