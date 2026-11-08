@@ -270,13 +270,21 @@ fn collect(
                 {
                     continue;
                 }
+                // A static method cannot see its class's type parameters, and an
+                // instance method's own `<T>` shadows a class `T`: either way
+                // the receiver's arguments must not reach into the signature.
+                let applicable = if method.modifiers.is_static {
+                    Substitution::new()
+                } else {
+                    local.without(&method.type_params)
+                };
                 let mut substituted = method.clone();
                 for param in &mut substituted.params {
-                    param.ty = param.ty.substitute(&local);
+                    param.ty = param.ty.substitute(&applicable);
                 }
-                substituted.ret = method.ret.substitute(&local);
+                substituted.ret = method.ret.substitute(&applicable);
                 for thrown in &mut substituted.throws {
-                    *thrown = thrown.substitute(&local);
+                    *thrown = thrown.substitute(&applicable);
                 }
                 // An override replaces the inherited declaration. Erasure is
                 // the right key: that is what the JLS compares.

@@ -237,6 +237,16 @@ pub fn context_at<'a>(db: &'a Db, file: FileId, offset: u32) -> Option<Context<'
     }
 
     let node = ast::node_at(source.tree(), offset);
+    // A method's type parameters must be known before its parameter and local
+    // types are lowered, or `T item` would resolve to nothing.
+    type_vars.extend(method_type_parameters(
+        node,
+        text,
+        db,
+        &resolution_outline,
+        &enclosing,
+        &type_vars,
+    ));
     let scope_for_types = Scope {
         db,
         outline: &resolution_outline,
@@ -247,7 +257,6 @@ pub fn context_at<'a>(db: &'a Db, file: FileId, offset: u32) -> Option<Context<'
     let mut locals = Vec::new();
     let mut in_static_context = false;
     let mut method_node_range = None;
-    let mut method_type_vars = Vec::new();
 
     for ancestor in ast::ancestors(node) {
         match ancestor.kind() {
@@ -326,25 +335,6 @@ pub fn context_at<'a>(db: &'a Db, file: FileId, offset: u32) -> Option<Context<'
                 in_static_context =
                     in_static_context || crate::outline::has_modifier(ancestor, text, "static");
                 collect_parameters(ancestor, text, &scope_for_types, &mut locals);
-                if let Some(list) = ast::field(ancestor, "type_parameters") {
-                    for declaration in
-                        ast::named_children(list).filter(|c| c.kind() == "type_parameter")
-                    {
-                        if let Some(name_node) = ast::named_children(declaration)
-                            .find(|c| matches!(c.kind(), "type_identifier" | "identifier"))
-                        {
-                            let bounds = ast::named_children(declaration)
-                                .find(|c| c.kind() == "type_bound")
-                                .map(|bound| {
-                                    ast::named_children(bound)
-                                        .map(|t| scope_for_types.lower_type(t, text))
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            method_type_vars.push((name::name(ast::text(name_node, text)), bounds));
-                        }
-                    }
-                }
             }
             "field_declaration" => {
                 in_static_context =
@@ -354,8 +344,6 @@ pub fn context_at<'a>(db: &'a Db, file: FileId, offset: u32) -> Option<Context<'
             _ => {}
         }
     }
-    type_vars.extend(method_type_vars);
-
     let self_type = class
         .as_ref()
         .filter(|_| !in_static_context)
@@ -379,6 +367,68 @@ pub fn context_at<'a>(db: &'a Db, file: FileId, offset: u32) -> Option<Context<'
     // context, so it happens in a second pass over the one just built.
     resolve_lambda_parameter_types(&mut context, offset);
     Some(context)
+}
+
+/// The type parameters of every method or constructor enclosing `node`,
+/// outermost first, with their bounds.
+///
+/// Two passes: the names are registered first, without bounds, so that a bound
+/// may mention any variable including its own (`T extends Comparable<? super T>`);
+/// then each bound is lowered against that scope.
+fn method_type_parameters(
+    node: Node<'_>,
+    text: &str,
+    db: &Db,
+    outline: &FileOutline,
+    enclosing: &[Name],
+    outer: &[(Name, Vec<Type>)],
+) -> Vec<(Name, Vec<Type>)> {
+    let mut declarations: Vec<(Name, Vec<Node<'_>>)> = Vec::new();
+    let methods: Vec<Node<'_>> = ast::ancestors(node)
+        .filter(|a| matches!(a.kind(), "method_declaration" | "constructor_declaration"))
+        .collect();
+    for method in methods.into_iter().rev() {
+        let Some(list) = ast::field(method, "type_parameters") else {
+            continue;
+        };
+        for declaration in ast::named_children(list).filter(|c| c.kind() == "type_parameter") {
+            let Some(name_node) = ast::named_children(declaration)
+                .find(|c| matches!(c.kind(), "type_identifier" | "identifier"))
+            else {
+                continue;
+            };
+            let bounds = ast::named_children(declaration)
+                .find(|c| c.kind() == "type_bound")
+                .map(|bound| ast::named_children(bound).collect())
+                .unwrap_or_default();
+            declarations.push((name::name(ast::text(name_node, text)), bounds));
+        }
+    }
+    if declarations.is_empty() {
+        return Vec::new();
+    }
+    let mut known: Vec<(Name, Vec<Type>)> = outer.to_vec();
+    known.extend(
+        declarations
+            .iter()
+            .map(|(name, _)| (name.clone(), Vec::new())),
+    );
+    let scope = Scope {
+        db,
+        outline,
+        enclosing: enclosing.to_vec(),
+        type_vars: known,
+    };
+    declarations
+        .into_iter()
+        .map(|(name, bounds)| {
+            let lowered = bounds
+                .into_iter()
+                .map(|b| scope.lower_type(b, text))
+                .collect();
+            (name, lowered)
+        })
+        .collect()
 }
 
 /// Gives untyped lambda parameters the types their target interface declares.
@@ -439,7 +489,7 @@ fn resolve_lambda_parameter_types(context: &mut Context<'_>, offset: u32) {
 /// A wildcard in a functional interface's parameter position stands for the
 /// type the lambda will actually receive, so its bound is used directly:
 /// `Consumer<? super String>.accept(? super String)` yields `String`.
-fn lambda_parameter_type(declared: &Type) -> Type {
+pub(crate) fn lambda_parameter_type(declared: &Type) -> Type {
     match declared {
         Type::Wildcard {
             bound: Some(bound), ..
@@ -450,7 +500,7 @@ fn lambda_parameter_type(declared: &Type) -> Type {
 }
 
 /// Names declared by a lambda's parameter list, in order.
-fn lambda_parameter_names(lambda: Node<'_>, text: &str) -> Vec<String> {
+pub(crate) fn lambda_parameter_names(lambda: Node<'_>, text: &str) -> Vec<String> {
     let Some(parameters) = ast::field(lambda, "parameters") else {
         return Vec::new();
     };
@@ -471,7 +521,7 @@ fn lambda_parameter_names(lambda: Node<'_>, text: &str) -> Vec<String> {
 
 /// Collects declarations in a block that precede `offset`; a local is not in
 /// scope before its own declaration.
-fn collect_block_locals(
+pub(crate) fn collect_block_locals(
     block: Node<'_>,
     offset: u32,
     text: &str,

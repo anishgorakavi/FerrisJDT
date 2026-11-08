@@ -410,6 +410,19 @@ impl Substitution {
             .map(|(_, t)| t)
     }
 
+    /// This substitution without the given names: what remains when a method's
+    /// own type parameters shadow the class's parameters of the same name.
+    pub fn without(&self, names: &[crate::symbols::TypeParam]) -> Substitution {
+        Substitution {
+            entries: self
+                .entries
+                .iter()
+                .filter(|(name, _)| !names.iter().any(|param| param.name == *name))
+                .cloned()
+                .collect(),
+        }
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&Name, &Type)> {
         self.entries.iter().map(|(n, t)| (n, t))
     }

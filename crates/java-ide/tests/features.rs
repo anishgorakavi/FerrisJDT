@@ -715,6 +715,59 @@ fn diagnostics_stay_silent_on_correct_code() {
 }
 
 #[test]
+fn diagnostics_stay_silent_on_valid_generic_code() {
+    let source = r#"import java.util.*;
+import java.util.concurrent.TimeUnit;
+import java.util.function.*;
+import java.util.stream.*;
+
+public class T {
+    static <T> T id(T t) { return t; }
+    static <T extends Comparable<? super T>> T maxOf(List<? extends T> items) {
+        T best = items.get(0);
+        for (T item : items) {
+            if (item.compareTo(best) > 0) { best = item; }
+        }
+        return best;
+    }
+    static <E extends Enum<E>> E first(Class<E> c) { return c.getEnumConstants()[0]; }
+    static <T extends Number & Comparable<T>> T clamp(T v, T lo, T hi) {
+        return v.compareTo(lo) < 0 ? lo : v;
+    }
+    static <T> void sortDesc(List<T> l, Comparator<? super T> c) { l.sort(c); }
+
+    void m(List<Integer> ints, List<String> strs) {
+        String a = id("x");
+        Integer b = id(5);
+        List<Integer> c = Arrays.asList(3, 1, 2);
+        Integer d = maxOf(ints);
+        Integer e = Collections.max(ints);
+        TimeUnit f = first(TimeUnit.class);
+        Integer g = clamp(5, 1, 9);
+        sortDesc(strs, (x, y) -> y.compareTo(x));
+        Optional<Integer> h = Optional.of("x").map(s -> s.length());
+        Map<Integer, List<Integer>> i = ints.stream().collect(Collectors.groupingBy(n -> n % 2));
+        Map<Integer, List<String>> j = strs.stream().collect(Collectors.groupingBy(String::length));
+        List<String> k = ints.stream().map(String::valueOf).collect(Collectors.toList());
+        Stream.of("a", "b").map(s -> s.length()).collect(Collectors.toList()).get(0).intValue();
+    }
+}
+"#;
+    let fixture = Fixture::new(&[("T.java", source)]);
+    if !fixture.has_stdlib() {
+        eprintln!("skipping: no JDK standard library");
+        return;
+    }
+    let file = fixture.file("T.java");
+    let found = diagnostics::diagnostics(&fixture.db, file);
+    assert!(
+        found.is_empty(),
+        "javac accepts this file, so these are false positives: {:?}",
+        found.iter().map(diagnostics::describe).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn diagnostics_say_nothing_about_unresolved_code() {
     // Nothing about `Missing` can be checked, so only the unknown type is
     // reported: no invented member or argument errors.

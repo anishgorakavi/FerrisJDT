@@ -78,6 +78,8 @@ crates/java-semantic/               The semantic core. Knows nothing of LSP.
                                     through; subtype tests; functional interface methods.
   src/overload.rs                   Assignability, the three applicability phases, most-specific
                                     selection, and generic method argument inference.
+  src/solve.rs                      Solves a generic method's type variables from arguments, the expected
+                                    type, and lambda results; supertype views and common supertypes.
   src/infer.rs                      Expression type inference, call resolution, and target typing,
                                     with cycle and depth guards.
   src/javadoc.rs                    Extracts a declaration's javadoc and splits its block tags.
@@ -85,6 +87,8 @@ crates/java-semantic/               The semantic core. Knows nothing of LSP.
                                     the incremental invalidation rules.
   src/fixture.rs                    Builds a database from in-memory files for tests; behind the
                                     `fixture` feature so it is absent from release builds.
+  tests/generics.rs                 Generic method inference: varargs, wildcards, shadowed type
+                                    variables, lambdas, method references, nested calls, diamonds.
   tests/inference.rs                Inference, generics, overloads, inheritance, the acceptance
                                     cases from the brief, and that unresolvable code stays
                                     unresolved.

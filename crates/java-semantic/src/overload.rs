@@ -11,6 +11,7 @@
 
 use crate::db::Db;
 use crate::members::{is_subtype, FoundMethod};
+use crate::solve::{self, Inference};
 use crate::types::{Primitive, Substitution, Type};
 
 /// Whether a value of type `from` may be assigned to `to` (JLS 5.2), including
@@ -49,6 +50,15 @@ pub fn is_assignable(db: &Db, from: &Type, to: &Type) -> bool {
                 bound: Some(bound),
             },
         ) => is_assignable(db, from, bound),
+        // Reading from a `? extends B` is reading a B (capture conversion), so
+        // `T best = items.get(0)` is fine for `List<? extends T>`.
+        (
+            Type::Wildcard {
+                kind: crate::types::WildcardKind::Extends,
+                bound: Some(bound),
+            },
+            _,
+        ) if !matches!(to, Type::Wildcard { .. }) => is_assignable(db, bound, to),
         // An `? extends T` or bare `?` target cannot be written to safely.
         (_, Type::Wildcard { .. }) => matches!(from, Type::Null),
         (_, Type::Var(_)) => {
@@ -83,16 +93,47 @@ enum Phase {
     Varargs,
 }
 
+/// A method's parameter types as a call with these arguments would see them:
+/// a generic method's own type variables are replaced by what the arguments
+/// bind them to, so `T` in `id(T)` accepts a `String`. `None` when the solved
+/// types break a declared bound.
+pub fn instantiated_params(
+    db: &Db,
+    method: &FoundMethod,
+    args: &[Type],
+    spread: bool,
+) -> Option<Vec<Type>> {
+    let data = &method.method;
+    if data.type_params.is_empty() {
+        return Some(data.params.iter().map(|p| p.ty.clone()).collect());
+    }
+    let mut inference = Inference::new(db, &data.type_params);
+    solve::bind_arguments(&mut inference, data, args, spread);
+    if !inference.bounds_hold() {
+        return None;
+    }
+    let solved = inference.finish();
+    Some(
+        data.params
+            .iter()
+            .map(|p| p.ty.substitute(&solved))
+            .collect(),
+    )
+}
+
 fn applicable(db: &Db, method: &FoundMethod, args: &[Type], phase: Phase) -> bool {
-    let params = &method.method.params;
+    let spread = phase == Phase::Varargs;
+    let Some(params) = instantiated_params(db, method, args, spread) else {
+        return false;
+    };
     match phase {
         Phase::Strict | Phase::Loose => {
             if params.len() != args.len() {
                 return false;
             }
-            args.iter().zip(params).all(|(arg, param)| match phase {
-                Phase::Strict => is_assignable_strict(db, arg, &param.ty),
-                _ => is_assignable(db, arg, &param.ty),
+            args.iter().zip(&params).all(|(arg, param)| match phase {
+                Phase::Strict => is_assignable_strict(db, arg, param),
+                _ => is_assignable(db, arg, param),
             })
         }
         Phase::Varargs => {
@@ -106,16 +147,16 @@ fn applicable(db: &Db, method: &FoundMethod, args: &[Type], phase: Phase) -> boo
             if !args[..fixed]
                 .iter()
                 .zip(&params[..fixed])
-                .all(|(arg, param)| is_assignable(db, arg, &param.ty))
+                .all(|(arg, param)| is_assignable(db, arg, param))
             {
                 return false;
             }
-            let Type::Array(element) = &params[fixed].ty else {
+            let Type::Array(element) = &params[fixed] else {
                 return false;
             };
             // The variable-arity part accepts either an array of the element
             // type or any number of individual elements.
-            if args.len() == params.len() && is_assignable(db, &args[fixed], &params[fixed].ty) {
+            if args.len() == params.len() && is_assignable(db, &args[fixed], &params[fixed]) {
                 return true;
             }
             args[fixed..]
@@ -186,67 +227,20 @@ fn more_specific(db: &Db, left: &FoundMethod, right: &FoundMethod) -> bool {
 
 /// Infers a generic method's type arguments from the argument types.
 ///
-/// This is the pragmatic subset of JLS 18: match each parameter against the
-/// corresponding argument and record what each type variable must be. It is
-/// enough for the shapes that appear in ordinary code — `Arrays.asList("a")`,
-/// `Collections.sort(list)`, `map.put(k, v)` — and any variable it cannot
-/// solve is left alone rather than guessed.
-pub fn infer_type_arguments(method: &crate::symbols::MethodData, args: &[Type]) -> Substitution {
-    let mut subst = Substitution::new();
+/// Covers the shapes that appear in ordinary code: `Arrays.asList("a")`,
+/// `Collections.max(list)`, `map.put(k, v)`. Arguments that are lambdas or
+/// calls whose own type depends on this one are handled by the caller, which
+/// has the syntax; see `Inferer::apply_type_arguments`.
+pub fn infer_type_arguments(
+    db: &Db,
+    method: &crate::symbols::MethodData,
+    args: &[Type],
+) -> Substitution {
     if method.type_params.is_empty() {
-        return subst;
+        return Substitution::new();
     }
-    let names: Vec<&str> = method.type_params.iter().map(|p| &*p.name).collect();
-    for (param, arg) in method.params.iter().zip(args) {
-        unify(&param.ty, arg, &names, &mut subst);
-    }
-    // Any variable still unsolved falls back to its own bound, which is what
-    // erasure would give; this keeps the return type usable.
-    for param in &method.type_params {
-        if subst.get(&param.name).is_none() {
-            let bound = param.bounds.first().cloned().unwrap_or_else(Type::object);
-            subst.insert(param.name.clone(), bound);
-        }
-    }
-    subst
-}
-
-/// Matches a declared type against an actual one, recording bindings for any
-/// of `names` encountered.
-fn unify(declared: &Type, actual: &Type, names: &[&str], subst: &mut Substitution) {
-    match declared {
-        Type::Var(var) if names.contains(&&*var.name) => {
-            if subst.get(&var.name).is_none() && !actual.is_unknown() {
-                // An argument's own type variables are kept; boxing a
-                // primitive is what the call would do anyway.
-                let bound = match actual {
-                    Type::Primitive(p) if *p != Primitive::Void => Type::class(p.boxed()),
-                    Type::Null => return,
-                    other => other.clone(),
-                };
-                subst.insert(var.name.clone(), bound);
-            }
-        }
-        Type::Array(declared_element) => {
-            if let Type::Array(actual_element) = actual {
-                unify(declared_element, actual_element, names, subst);
-            }
-        }
-        Type::Class {
-            args: declared_args,
-            ..
-        } => {
-            // Match type arguments positionally against the actual type's,
-            // looking through a wildcard to its bound.
-            let actual = actual.upper_bound();
-            let actual_args = actual.type_args();
-            for (left, right) in declared_args.iter().zip(actual_args) {
-                unify(&left.upper_bound(), &right.upper_bound(), names, subst);
-            }
-        }
-        Type::Wildcard {
-            bound: Some(bound), ..
-        } => unify(bound, actual, names, subst),
-        _ => {}
-    }
+    let mut inference = Inference::new(db, &method.type_params);
+    let spread = solve::spreads_varargs(method, args);
+    solve::bind_arguments(&mut inference, method, args, spread);
+    inference.finish()
 }

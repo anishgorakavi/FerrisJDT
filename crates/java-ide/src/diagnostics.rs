@@ -471,6 +471,7 @@ impl<'a> Checker<'a> {
             .iter()
             .filter(|found| found.method.accepts_arity(args.len()))
             .collect();
+        let arity_matches = inferer.narrow_by_lambda_arity(node, arity_matches);
         if arity_matches.is_empty() {
             let expected: Vec<String> = candidates
                 .iter()
@@ -501,8 +502,13 @@ impl<'a> Checker<'a> {
         // wrong; with several, only that none applied can be stated.
         if arity_matches.len() == 1 {
             let method = &arity_matches[0].method;
-            for (index, (argument, param)) in args.iter().zip(&method.params).enumerate() {
-                if !overload::is_assignable(self.db, argument, &param.ty) {
+            // A generic method is judged by its parameters as this call
+            // instantiates them, not by the bare `T` it was declared with.
+            let spread = java_semantic::solve::spreads_varargs(method, &args);
+            let params = overload::instantiated_params(self.db, arity_matches[0], &args, spread)
+                .unwrap_or_else(|| method.params.iter().map(|p| p.ty.clone()).collect());
+            for (index, (argument, param_ty)) in args.iter().zip(&params).enumerate() {
+                if !overload::is_assignable(self.db, argument, param_ty) {
                     let argument_node = ast::field(node, "arguments")
                         .and_then(|list| ast::named_children(list).nth(index));
                     let range = argument_node
@@ -516,7 +522,7 @@ impl<'a> Checker<'a> {
                             "argument {} of `{}` expects `{}` but got `{}`",
                             index + 1,
                             method.name,
-                            param.ty.display_short(),
+                            param_ty.display_short(),
                             argument.display_short()
                         ),
                     );

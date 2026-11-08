@@ -35,3 +35,4 @@ pub const MAX_EXPRESSION_DEPTH: u32 = 128;
 pub mod infer;
 pub mod overload;
 pub mod scope;
+pub mod solve;

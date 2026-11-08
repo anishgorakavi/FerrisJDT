@@ -20,31 +20,41 @@ names.forEach(name -> name.length());                             // name is Str
 Visitor<String> v = item -> item.length();                        // works for your own interfaces too
 ```
 
-What is not implemented is a target type that must itself be inferred — a
-lambda passed to a generic method whose type argument is only determined by
-that same lambda:
+A lambda or method reference passed to a generic method is also used to solve
+that method's type variables. Once the variables its parameters mention are
+known, the body is typed with the parameters in scope and the result binds the
+return variable:
 
 ```java
-// `x`'s type depends on solving T from the lambda itself, which is not done.
-list.stream().map(x -> x.length());
+Optional.of("x").map(s -> s.length());        // Optional<Integer>
+strs.stream().map(String::valueOf);           // Stream<String>
+ints.stream().collect(Collectors.groupingBy(i -> i % 2));  // Map<Integer, List<Integer>>
 ```
 
-There the parameter stays unknown. The body is still parsed and navigable, and
-no false diagnostics are produced: inference returns unknown and every check
-stands down. A method reference (`String::length`, `String[]::new`) is
-resolved only as far as its target type is known, which is the same
-restriction.
+Limits: a block-bodied lambda is typed from its first `return` whose type is
+known, and locals declared with `var` inside it are not tracked. A method
+reference is resolved by arity and argument types, so an overloaded reference
+that `javac` disambiguates by its target's return type may come out unknown. In
+every case the answer is "unknown" rather than a guess, and no false
+diagnostics are produced: every check stands down.
 
 ### Generic method type inference
 
-Argument-driven inference is implemented for the shapes that occur in ordinary
-code — `Arrays.asList("a")`, `Collections.sort(list)`, `map.put(k, v)` — by
-matching each parameter against its argument. What is not implemented is the
-constraint-solving of JLS 18: inference from the return type's context, nested
-inference through generic arguments, and bounds that interact. A variable that
-cannot be solved falls back to its declared bound, which is what erasure would
-give, so the result is usable rather than unknown — but it can be less precise
-than `javac` would be.
+A generic method's type variables are solved, in this order, from the typed
+arguments (including varargs and wildcard-parameterised ones, such as
+`List<? extends T>` and `Class<E>`), from the type the call is expected to
+produce, from nested calls inferred again against the parameter they fill
+(`collect(Collectors.toList())`), and from lambda and method reference results.
+A diamond takes its arguments from its target type or, failing that, from the
+constructor arguments. Differing bindings for one variable are joined at their
+closest common superclass.
+
+This is the pragmatic subset of JLS 18, not the whole of it. Not modelled:
+bounds that interact across several variables, inference variables flowing
+through chained calls whose first call has no arguments to anchor it, and
+capture conversion beyond reading a `? extends B` as a `B`. A variable that
+nothing determines is unknown when it is unbounded and takes its bound
+otherwise, so a call is never reported wrong because inference stopped short.
 
 ### Checked exceptions
 
@@ -192,9 +202,7 @@ never offered; it is only the hand-written case that goes undiagnosed.
    every start, but by parsing `pom.xml` and the Gradle cache for JAR paths,
    with an optional one-off `mvn dependency:build-classpath` behind a setting.
    This is the largest functional gap against JDTLS.
-3. **Solve lambda target types through generic method inference**, which would
-   complete `list.stream().map(x -> ...)`.
-4. **Formatting**, so the server is self-sufficient.
-5. **A `cargo-fuzz` target** for the class-file reader, the signature parser,
+3. **Formatting**, so the server is self-sufficient.
+4. **A `cargo-fuzz` target** for the class-file reader, the signature parser,
    and the completion entry point, replacing the hand-written adversarial
    cases with continuous coverage.
