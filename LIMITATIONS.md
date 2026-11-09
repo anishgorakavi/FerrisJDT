@@ -123,6 +123,14 @@ never offered; it is only the hand-written case that goes undiagnosed.
   `gradleApi()`, which the client's classpath does not carry, so `org.gradle.*`
   types are reported as unknown. On the JHipster sample all of its remaining
   diagnostics are of this kind.
+* **Java 22 unnamed variables (`case Foo _ ->`, `Foo _`) are a syntax error.**
+  The tree-sitter-java grammar (0.23.5, the newest published) does not parse
+  them; Micronaut uses them in 9 places.
+* **Generated sources need a compile first.** `.ferrisjdt/sources.txt` lists
+  generated directories, but annotation processors only write them when the
+  project is compiled; the Neovim helper never compiles (running a downloaded
+  project's annotation processors was not attempted), so generated types of an
+  uncompiled project are unknown.
 * **A Gradle project is one flat classpath.** Every module's and source set's
   compile classpath is merged, so a class that exists only in another
   module's dependencies resolves where javac would reject it.
