@@ -7,6 +7,12 @@ which.
 
 ## Semantic gaps
 
+### Constant narrowing
+
+`byte b = n;` is not reported when `n` is a plain name, because the checker cannot yet tell a
+`static final int` constant from a variable. Only literals, operators, casts, and non-name operands
+are judged, so this misses an error rather than inventing one.
+
 ### Lambdas and method references
 
 A lambda's parameter types come from the functional interface it targets. That

@@ -294,6 +294,11 @@ fn collect(
                 if method.is_constructor {
                     continue;
                 }
+                // JLS 8.4.8: a static method of an interface is not inherited, so `List.of` is
+                // not a member of `ImmutableList`.
+                if depth > 0 && method.modifiers.is_static && class.is_interface() {
+                    continue;
+                }
                 if !visible(
                     method.visibility,
                     method.modifiers.is_synthetic,

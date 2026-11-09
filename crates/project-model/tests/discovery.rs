@@ -307,3 +307,27 @@ fn a_jdk_home_is_matched_by_its_release_file_not_its_name() {
     fs::write(old.join("release"), "JAVA_VERSION=\"1.8.0_402\"\n").unwrap();
     assert_eq!(jdk::home_major(&old), Some(8));
 }
+
+#[test]
+fn packages_named_like_build_output_are_indexed_inside_a_source_root() {
+    let root = scratch("package-named-build");
+    fs::create_dir_all(root.join("src/main/java/org/app/internal/build")).unwrap();
+    fs::create_dir_all(root.join("src/main/java/org/app/out")).unwrap();
+    fs::create_dir_all(root.join("build/classes")).unwrap();
+    fs::write(
+        root.join("src/main/java/org/app/internal/build/State.java"),
+        "package org.app.internal.build; class State {}",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/main/java/org/app/out/Sink.java"),
+        "package org.app.out; class Sink {}",
+    )
+    .unwrap();
+    fs::write(root.join("build/classes/Stray.java"), "class Stray {}").unwrap();
+    let project = Project::load(&root, &Config::default());
+    let files = project.discover_source_files();
+    assert_eq!(files.len(), 2, "{files:?}");
+    assert!(files.iter().any(|f| f.ends_with("State.java")));
+    assert!(files.iter().any(|f| f.ends_with("Sink.java")));
+}

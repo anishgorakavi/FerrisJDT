@@ -23,6 +23,11 @@ const DEFAULT_EXCLUDES: &[&str] = &[
     ".venv",
 ];
 
+/// Default excludes that are also legal package names (`org.gradle.internal.build`). They are
+/// skipped when scanning a project root for stray sources, but not inside a source root, where a
+/// directory is a package.
+const PACKAGE_LIKE_EXCLUDES: &[&str] = &["target", "build", "out", "bin"];
+
 /// Guards against walking a pathological tree. Both are deliberately generous
 /// for a course project yet bounded, as untrusted input requires.
 const MAX_DEPTH: usize = 24;
@@ -45,6 +50,8 @@ pub struct Project {
     pub excluded_files: Vec<PathBuf>,
     pub max_source_files: usize,
     excludes: Vec<String>,
+    /// `excludes` without the package-like defaults, used inside source roots.
+    source_root_excludes: Vec<String>,
 }
 
 impl Project {
@@ -77,6 +84,13 @@ impl Project {
 
         let mut excludes: Vec<String> = DEFAULT_EXCLUDES.iter().map(|s| s.to_string()).collect();
         excludes.extend(config.exclude.iter().cloned());
+        let source_root_excludes: Vec<String> = excludes
+            .iter()
+            .filter(|name| {
+                !PACKAGE_LIKE_EXCLUDES.contains(&name.as_str()) || config.exclude.contains(name)
+            })
+            .cloned()
+            .collect();
 
         let mut source_roots = Vec::new();
         let push_root = |path: PathBuf, roots: &mut Vec<PathBuf>| {
@@ -146,6 +160,7 @@ impl Project {
             excluded_files,
             max_source_files: config.max_source_files.unwrap_or(DEFAULT_MAX_SOURCE_FILES),
             excludes,
+            source_root_excludes,
         }
     }
 
@@ -161,7 +176,9 @@ impl Project {
         roots.sort();
         roots.dedup_by(|inner, outer| inner.starts_with(&*outer));
         for root in roots.iter().chain(&self.listed_source_roots) {
-            self.walk(root, 0, &mut found);
+            // Below a real source root every directory is a package; only a project root that
+            // doubles as the source root (the flat course layout) is filtered by name.
+            self.walk(root, 0, *root != self.root, &mut found);
         }
         found.sort();
         found.dedup();
@@ -171,7 +188,7 @@ impl Project {
         found
     }
 
-    fn walk(&self, dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
+    fn walk(&self, dir: &Path, depth: usize, in_source_root: bool, found: &mut Vec<PathBuf>) {
         if depth > MAX_DEPTH || found.len() >= self.max_source_files {
             return;
         }
@@ -191,7 +208,12 @@ impl Project {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if file_type.is_dir() {
-                if name.starts_with('.') || self.excludes.iter().any(|e| *e == name) {
+                let excludes = if in_source_root {
+                    &self.source_root_excludes
+                } else {
+                    &self.excludes
+                };
+                if name.starts_with('.') || excludes.iter().any(|e| *e == name) {
                     continue;
                 }
                 subdirectories.push(entry.path());
@@ -205,7 +227,7 @@ impl Project {
         }
         subdirectories.sort();
         for subdirectory in subdirectories {
-            self.walk(&subdirectory, depth + 1, found);
+            self.walk(&subdirectory, depth + 1, in_source_root, found);
         }
     }
 

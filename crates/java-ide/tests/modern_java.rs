@@ -387,3 +387,48 @@ fn a_covariant_return_declared_through_another_interface_wins() {
     let source = "public class T {\n  interface Headers { String get(String n); }\n  interface MutableHeaders extends Headers { MutableHeaders add(String n, String v); }\n  interface Message { Headers getHeaders(); }\n  interface MutableMessage extends Message { MutableHeaders getHeaders(); }\n  interface Response extends Message { }\n  interface MutableResponse extends Response, MutableMessage { }\n  void m(MutableResponse r) {\n    r.getHeaders().add(\"a\", \"b\");\n    MutableHeaders h = r.getHeaders();\n  }\n}\n";
     assert_eq!(errors(source), Vec::<String>::new());
 }
+
+#[test]
+fn constant_int_narrows_to_byte_short_char_without_a_cast() {
+    if !has_stdlib() {
+        return;
+    }
+    let source = r#"
+class T {
+    static final int LIMIT = 5;
+    byte version() { return 3; }
+    char letter() { return 'a' + 1; }
+    void f(int n) {
+        byte a = 0;
+        byte b = -1;
+        byte c = 0x7f;
+        short d = 300;
+        char e = 65;
+        Byte boxed = 5;
+        byte g = LIMIT;
+        byte h = (byte) 200;
+        int octal = (n & 0_700) >> 6;
+    }
+}
+"#;
+    assert_eq!(errors(source), Vec::<String>::new());
+}
+
+#[test]
+fn constants_that_do_not_fit_or_are_not_constant_still_fail_to_narrow() {
+    if !has_stdlib() {
+        return;
+    }
+    let source = r#"
+class T {
+    int value() { return 1; }
+    void f() {
+        byte a = 200;
+        char b = -1;
+        byte c = value();
+    }
+    byte g() { return 128; }
+}
+"#;
+    assert_eq!(errors(source).len(), 4, "{:?}", errors(source));
+}

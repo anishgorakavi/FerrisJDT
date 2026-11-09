@@ -180,10 +180,46 @@ impl SourceFile {
 /// Parses `text`, masking constructs the grammar cannot read, and reports whether it did.
 /// `old` is dropped when masking applies, because it was built from different text.
 fn parse_text(text: &str, old: Option<&Tree>) -> (Tree, bool) {
-    match mask_annotated_ellipsis(text) {
+    let ellipsis = mask_annotated_ellipsis(text);
+    let octal = mask_octal_underscores(ellipsis.as_deref().unwrap_or(text));
+    match octal.or(ellipsis) {
         Some(masked) => (parse(&masked, None), true),
         None => (parse(text, old), false),
     }
+}
+
+/// Turns the underscore of an octal literal such as `0_700` into a zero (`00700`).
+///
+/// tree-sitter-java 0.23 reads `0_700` as a decimal `0` followed by garbage, although Java allows
+/// underscores right after the leading zero. The replacement has the same length and the same
+/// value, so byte offsets still line up. Returns `None` when there is nothing to mask.
+fn mask_octal_underscores(text: &str) -> Option<String> {
+    if !text.contains("0_") {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let mut masked: Option<Vec<u8>> = None;
+    for at in 0..bytes.len().saturating_sub(2) {
+        if bytes[at] != b'0' || bytes[at + 1] != b'_' {
+            continue;
+        }
+        let starts_number = at == 0
+            || !(bytes[at - 1].is_ascii_alphanumeric()
+                || matches!(bytes[at - 1], b'_' | b'$' | b'.'));
+        if !starts_number {
+            continue;
+        }
+        let mut digits = at + 1;
+        while digits < bytes.len() && bytes[digits] == b'_' {
+            digits += 1;
+        }
+        if digits < bytes.len() && (b'0'..=b'7').contains(&bytes[digits]) {
+            let buffer = masked.get_or_insert_with(|| bytes.to_vec());
+            buffer[at + 1..digits].fill(b'0');
+        }
+    }
+    // Only ASCII bytes were replaced by ASCII zeros, so the copy is still valid UTF-8.
+    masked.and_then(|buffer| String::from_utf8(buffer).ok())
 }
 
 /// Blanks type-use annotations before a varargs ellipsis, as in `String @Nullable ... names`.
