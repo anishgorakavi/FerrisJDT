@@ -9,6 +9,7 @@ pub mod db;
 #[cfg(feature = "fixture")]
 pub mod fixture;
 pub mod javadoc;
+pub mod lombok;
 pub mod lower;
 pub mod members;
 pub mod name;

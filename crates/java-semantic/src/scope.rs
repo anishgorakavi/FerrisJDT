@@ -262,6 +262,25 @@ pub fn context_at<'a>(db: &'a Db, file: FileId, offset: u32) -> Option<Context<'
         match ancestor.kind() {
             "block" | "constructor_body" | "switch_block" | "switch_block_statement_group" => {
                 collect_block_locals(ancestor, offset, text, &scope_for_types, &mut locals);
+                // `if (!(o instanceof T t)) return;` leaves `t` in scope for the rest of the block.
+                for statement in
+                    ast::named_children(ancestor).filter(|s| s.start_byte() as u32 <= offset)
+                {
+                    collect_pattern_bindings(statement, text, &scope_for_types, &mut locals);
+                }
+                if matches!(ancestor.kind(), "switch_block_statement_group") {
+                    collect_case_bindings(ancestor, text, &scope_for_types, &mut locals);
+                }
+            }
+            "switch_rule" => {
+                collect_case_bindings(ancestor, text, &scope_for_types, &mut locals);
+            }
+            "if_statement"
+            | "while_statement"
+            | "do_statement"
+            | "conditional_expression"
+            | "binary_expression" => {
+                collect_pattern_bindings(ancestor, text, &scope_for_types, &mut locals);
             }
             "for_statement" => {
                 if let Some(init) = ast::field(ancestor, "init") {
@@ -335,6 +354,15 @@ pub fn context_at<'a>(db: &'a Db, file: FileId, offset: u32) -> Option<Context<'
                 in_static_context =
                     in_static_context || crate::outline::has_modifier(ancestor, text, "static");
                 collect_parameters(ancestor, text, &scope_for_types, &mut locals);
+                // A compact constructor has no parameter list; the record's components are its
+                // parameters.
+                if ancestor.kind() == "compact_constructor_declaration" {
+                    if let Some(record) =
+                        ast::ancestors(ancestor).find(|a| a.kind() == "record_declaration")
+                    {
+                        collect_parameters(record, text, &scope_for_types, &mut locals);
+                    }
+                }
             }
             "field_declaration" => {
                 in_static_context =
@@ -536,6 +564,137 @@ pub(crate) fn collect_block_locals(
             collect_declaration(statement, text, scope, out);
         }
     }
+}
+
+/// Adds the variables introduced by patterns in `node`'s expressions.
+///
+/// Flow scoping (where a binding is definitely assigned) is not modelled: a binding is visible from
+/// its pattern to the end of the enclosing statement or block. That can accept a use Java rejects,
+/// but never rejects a valid one. Nested blocks are skipped so a binding inside one `if` body does
+/// not leak into its siblings.
+fn collect_pattern_bindings(node: Node<'_>, text: &str, scope: &Scope<'_>, out: &mut Vec<Local>) {
+    if matches!(node.kind(), "block" | "class_body" | "switch_block") {
+        return;
+    }
+    match node.kind() {
+        "instanceof_expression" => {
+            if let (Some(ty), Some(name_node)) =
+                (ast::field(node, "right"), ast::field(node, "name"))
+            {
+                out.push(named_binding(name_node, text, scope.lower_type(ty, text)));
+            }
+            if let Some(pattern) = ast::field(node, "pattern") {
+                bind_pattern(pattern, text, scope, out);
+            }
+        }
+        "type_pattern" | "record_pattern" => bind_pattern(node, text, scope, out),
+        _ => {}
+    }
+    for child in ast::named_children(node) {
+        collect_pattern_bindings(child, text, scope, out);
+    }
+}
+
+/// Bindings from a `case` label's patterns, visible in its guard and body.
+fn collect_case_bindings(node: Node<'_>, text: &str, scope: &Scope<'_>, out: &mut Vec<Local>) {
+    for label in ast::named_children(node).filter(|c| c.kind() == "switch_label") {
+        let mut cursor = label.walk();
+        for child in label.named_children(&mut cursor) {
+            bind_pattern(child, text, scope, out);
+        }
+    }
+}
+
+/// Declares the variables of one pattern: `Type name`, or the components of `Record(...)`.
+fn bind_pattern(node: Node<'_>, text: &str, scope: &Scope<'_>, out: &mut Vec<Local>) {
+    match node.kind() {
+        "pattern" | "guard" => {
+            for child in ast::named_children(node) {
+                bind_pattern(child, text, scope, out);
+            }
+        }
+        "type_pattern" => {
+            let parts: Vec<Node<'_>> = ast::named_children(node)
+                .filter(|c| c.kind() != "modifiers")
+                .collect();
+            if let [ty, name_node] = parts.as_slice() {
+                if name_node.kind() == "identifier" {
+                    out.push(named_binding(*name_node, text, scope.lower_type(*ty, text)));
+                }
+            }
+        }
+        "record_pattern" => {
+            let record = ast::named_children(node)
+                .find(|c| c.kind() != "record_pattern_body")
+                .map(|ty| scope.lower_type(ty, text))
+                .unwrap_or(Type::Unknown);
+            let component_types = record_component_types(scope, &record);
+            let Some(body) = ast::named_children(node).find(|c| c.kind() == "record_pattern_body")
+            else {
+                return;
+            };
+            for (index, component) in ast::named_children(body).enumerate() {
+                match component.kind() {
+                    "record_pattern_component" => {
+                        let parts: Vec<Node<'_>> = ast::named_children(component)
+                            .filter(|c| c.kind() != "modifiers")
+                            .collect();
+                        match parts.as_slice() {
+                            [ty, name_node] if name_node.kind() == "identifier" => {
+                                let declared = if ty.kind() == "type_identifier"
+                                    && ast::text(*ty, text) == "var"
+                                {
+                                    component_types.get(index).cloned().unwrap_or(Type::Unknown)
+                                } else {
+                                    scope.lower_type(*ty, text)
+                                };
+                                out.push(named_binding(*name_node, text, declared));
+                            }
+                            [nested] => bind_pattern(*nested, text, scope, out),
+                            _ => {}
+                        }
+                    }
+                    "record_pattern" => bind_pattern(component, text, scope, out),
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn named_binding(name_node: Node<'_>, text: &str, ty: Type) -> Local {
+    Local {
+        name: name::name(ast::text(name_node, text)),
+        ty,
+        name_range: (name_node.start_byte() as u32, name_node.end_byte() as u32),
+        is_parameter: false,
+    }
+}
+
+/// The declared component types of a record, in order, with any that mention a type variable
+/// replaced by `Unknown` rather than guessed.
+fn record_component_types(scope: &Scope<'_>, record: &Type) -> Vec<Type> {
+    let Some(class) = record.class_name().and_then(|n| scope.db.class(n)) else {
+        return Vec::new();
+    };
+    class
+        .fields
+        .iter()
+        .filter(|f| !f.modifiers.is_static)
+        .map(|f| {
+            if matches!(f.ty, Type::Var(_))
+                || class
+                    .type_params
+                    .iter()
+                    .any(|p| f.ty.display_full().contains(&*p.name))
+            {
+                Type::Unknown
+            } else {
+                f.ty.clone()
+            }
+        })
+        .collect()
 }
 
 fn collect_declaration(node: Node<'_>, text: &str, scope: &Scope<'_>, out: &mut Vec<Local>) {

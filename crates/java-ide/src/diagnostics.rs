@@ -256,6 +256,12 @@ impl<'a> Checker<'a> {
             if parent.kind() == "type_parameter" {
                 return;
             }
+            // `outer.new Inner()`: `Inner` is looked up in the outer instance's class.
+            if parent.kind() == "object_creation_expression"
+                && ast::creation_qualifier(parent).is_some()
+            {
+                return;
+            }
         }
         let written = java_semantic::outline::dotted(node, self.text());
         let Some(scope) = self.context_for(node).cloned() else {

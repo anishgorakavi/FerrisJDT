@@ -46,6 +46,16 @@ pub struct OutlineClass {
     pub is_anonymous: bool,
     /// For an anonymous class, the type it extends or implements, as written.
     pub anonymous_base: Option<Name>,
+    /// The nested builder class Lombok generates for this class, when it asks for one.
+    pub builder_class: Option<BuilderDecl>,
+}
+
+/// A builder class implied by `@Builder` or `@SuperBuilder`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuilderDecl {
+    pub name: Name,
+    /// `@SuperBuilder` also generates an `Impl` subclass.
+    pub is_super: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -64,11 +74,33 @@ impl FileOutline {
         self.package == other.package
             && self.imports == other.imports
             && self.classes.len() == other.classes.len()
-            && self
-                .classes
-                .iter()
-                .zip(&other.classes)
-                .all(|(a, b)| a.binary == b.binary && a.kind == b.kind && a.parent == b.parent)
+            && self.classes.iter().zip(&other.classes).all(|(a, b)| {
+                a.binary == b.binary
+                    && a.kind == b.kind
+                    && a.parent == b.parent
+                    && a.builder_class == b.builder_class
+            })
+    }
+
+    /// Classes Lombok generates, as (binary name, simple name, index of the enclosing class).
+    pub fn synthetic_classes(&self) -> Vec<(Name, Name, u32)> {
+        let mut found = Vec::new();
+        for (index, class) in self.classes.iter().enumerate() {
+            let Some(builder) = &class.builder_class else {
+                continue;
+            };
+            let binary = name::name(&format!("{}${}", class.binary, builder.name));
+            if builder.is_super {
+                let implementation = format!("{}Impl", builder.name);
+                found.push((
+                    name::name(&format!("{binary}Impl")),
+                    name::name(&implementation),
+                    index as u32,
+                ));
+            }
+            found.push((binary, builder.name.clone(), index as u32));
+        }
+        found
     }
 
     /// Top-level classes, which are the ones a package exposes.
@@ -141,6 +173,25 @@ pub fn outline(file: FileId, source: &SourceFile) -> FileOutline {
                 );
             }
             _ => {}
+        }
+    }
+    // Builders exist only where Lombok is imported, and a class that already declares a nested
+    // class of that name has written its own.
+    let lombok = imports
+        .iter()
+        .any(|i| &*i.path == "lombok" || i.path.starts_with("lombok."));
+    let declared: Vec<(Option<u32>, Name)> = classes
+        .iter()
+        .map(|c| (c.parent, c.simple.clone()))
+        .collect();
+    for (index, class) in classes.iter_mut().enumerate() {
+        let clashes = class.builder_class.as_ref().is_some_and(|builder| {
+            declared
+                .iter()
+                .any(|(parent, simple)| *parent == Some(index as u32) && *simple == builder.name)
+        });
+        if !lombok || clashes {
+            class.builder_class = None;
         }
     }
     FileOutline {
@@ -231,9 +282,20 @@ fn collect(
         range: (node.start_byte() as u32, node.end_byte() as u32),
         name_range: (name_node.start_byte() as u32, name_node.end_byte() as u32),
         parent,
-        is_static: has_modifier(node, text, "static") || parent.is_none(),
+        is_static: has_modifier(node, text, "static")
+            || parent.is_none()
+            || kind != ClassKind::Class
+            || node.kind() == "record_declaration",
         is_anonymous: false,
         anonymous_base: None,
+        builder_class: if node.kind() == "class_declaration" {
+            crate::lombok::builder_decl(node, text, simple).map(|(name, is_super)| BuilderDecl {
+                name: name::name(&name),
+                is_super,
+            })
+        } else {
+            None
+        },
     });
 
     let Some(body) = ast::field(node, "body") else {
@@ -345,6 +407,7 @@ fn collect_anonymous(
         is_static: false,
         is_anonymous: true,
         anonymous_base: base.as_deref().map(name::name),
+        builder_class: None,
     });
     collect_in_subtree(class_body, text, package, index, out, anonymous_counter);
 }

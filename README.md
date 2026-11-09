@@ -45,14 +45,14 @@ what is not there — nothing is listed as working without tests behind it.
 ```sh
 git clone <this repository>
 cd ferrisjdt
-make install            # builds --release and installs to ~/.local/bin/ferrisjdt
+make install            # builds --release and installs ferrisjdt and ferrisjdt-doctor to ~/.local/bin
 ```
 
 Or by hand:
 
 ```sh
 cargo build --release
-install -m 755 target/release/ferrisjdt ~/.local/bin/
+install -m 755 target/release/ferrisjdt target/release/ferrisjdt-doctor ~/.local/bin/
 ```
 
 Check it:
@@ -145,9 +145,12 @@ Formatting is not provided; this server has no formatter. `conform.nvim` with
 ## Project configuration
 
 Nothing is required: a directory of `.java` files works, as does a Maven or
-Gradle source layout. Dependencies are not resolved from `pom.xml` or
-`build.gradle` (see [LIMITATIONS.md](LIMITATIONS.md)); list JARs explicitly, or
-put them in `lib/`, where they are picked up automatically.
+Gradle source layout. The server does not run Maven or Gradle. It reads the
+dependency JARs listed one per line in `.ferrisjdt/classpath.txt`, and a client
+writes that file: Neovim does it with `:JavaDepsSync` (see its `javadeps.lua`),
+or run `mvn dependency:build-classpath` yourself. JARs in `lib/` are also picked
+up automatically, and the Java level comes from `pom.xml` or `build.gradle` when
+`sourceLevel` is not set.
 
 Settings come from `initializationOptions`, or from a `ferrisjdt.json` at the
 project root. Client settings win.
@@ -165,7 +168,7 @@ project root. Client settings win.
 
 | Key | Meaning |
 | --- | --- |
-| `sourceLevel` | Java language level, as a number. Default 8. Constructs newer than this are reported. |
+| `sourceLevel` | Java language level, as a number. Default: the level in `pom.xml` or `build.gradle`, else 8. Constructs newer than this are reported. |
 | `jdkHome` | JDK to read the standard library from. Discovered when absent, preferring one whose release matches `sourceLevel`. |
 | `sourceRoots` | Extra source directories, relative to the project root or absolute. |
 | `classpath` | Extra JARs, or directories to collect JARs from. |

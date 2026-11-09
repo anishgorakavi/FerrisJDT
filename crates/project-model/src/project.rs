@@ -1,5 +1,6 @@
 //! Source roots, the classpath, and the bounded source file walk.
 
+use crate::build_files;
 use crate::config::{Config, SourceLevel};
 use crate::jdk::{self, Jdk};
 use std::path::{Path, PathBuf};
@@ -43,9 +44,19 @@ pub struct Project {
 
 impl Project {
     /// Builds a project description from a root directory and client settings.
-    /// Only the filesystem is consulted; no build tool is invoked.
-    pub fn load(root: &Path, config: &Config) -> Project {
-        let source_level = SourceLevel(config.source_level.unwrap_or(8));
+    /// Only the filesystem is consulted; no build tool is invoked. An explicit
+    /// source level wins over the one a `pom.xml` or `build.gradle` declares.
+    pub fn load(opened: &Path, config: &Config) -> Project {
+        // Opening one module of a multi-module build makes the parent project the workspace.
+        let root = build_files::enclosing_build_root(opened);
+        let root = root.as_path();
+        let source_level = SourceLevel(
+            config
+                .source_level
+                .or_else(|| build_files::detect_source_level(opened))
+                .or_else(|| build_files::detect_source_level(root))
+                .unwrap_or(8),
+        );
         let jdk = jdk::discover(config.jdk_home.as_deref(), source_level.0);
         if let Some(jdk) = &jdk {
             tracing::info!(
@@ -85,6 +96,15 @@ impl Project {
         let mut classpath = Vec::new();
         for dir in ["lib", "libs", "jars"] {
             collect_jars(&root.join(dir), &mut classpath);
+        }
+        // Resolved by the client from pom.xml or build.gradle; see `build_files`.
+        classpath.extend(build_files::read_classpath_file(root));
+        if opened != root {
+            for jar in build_files::read_classpath_file(opened) {
+                if !classpath.contains(&jar) {
+                    classpath.push(jar);
+                }
+            }
         }
         for extra in &config.classpath {
             let path = if extra.is_absolute() {

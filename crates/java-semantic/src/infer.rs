@@ -476,6 +476,25 @@ impl<'a> Inferer<'a> {
         let Some(type_node) = ast::field(node, "type") else {
             return Type::Unknown;
         };
+        // `outer.new Inner()` names `Inner` as a member of the outer instance's class.
+        if let Some(qualifier) = ast::creation_qualifier(node) {
+            let outer = self.type_of(qualifier);
+            let simple = ast::named_children(type_node)
+                .find(|c| matches!(c.kind(), "type_identifier" | "identifier"))
+                .map(|c| ast::text(c, self.text()))
+                .unwrap_or_else(|| ast::text(type_node, self.text()));
+            return match outer.class_name() {
+                Some(outer_name) => {
+                    let binary = format!("{outer_name}${simple}");
+                    if self.db().has_class(&binary) {
+                        Type::class(binary)
+                    } else {
+                        Type::Unknown
+                    }
+                }
+                None => Type::Unknown,
+            };
+        }
         let created = self.ctx.type_scope().lower_type(type_node, self.text());
         let is_diamond = matches!(&created, Type::Class { args, .. } if args.is_empty())
             && ast::named_children(type_node)

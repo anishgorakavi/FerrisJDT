@@ -1,5 +1,6 @@
 //! Project discovery: source roots, language level, JDK location, classpath.
 
+pub mod build_files;
 pub mod config;
 pub mod jdk;
 pub mod project;

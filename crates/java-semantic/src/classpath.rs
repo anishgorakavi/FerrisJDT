@@ -139,6 +139,10 @@ impl Classpath {
     /// characters, so release 8 is any directory whose first segment contains
     /// `8`. A later release's directory may also contain the class, so the
     /// first match for a given name wins.
+    ///
+    /// `ct.sym` omits the JDK's own release, which lives in the `modules` image
+    /// instead, so a request for that release or a newer one reads the newest
+    /// release the archive does hold.
     pub fn add_ct_sym(&mut self, path: &Path, release: u32) {
         let jar = match Jar::open(path) {
             Ok(jar) => jar,
@@ -147,7 +151,15 @@ impl Classpath {
                 return;
             }
         };
-        let wanted = project_model::jdk::ct_sym_release_char(release);
+        let newest = jar
+            .entry_names()
+            .filter(|entry| entry.ends_with(".sig"))
+            .filter_map(|entry| entry.split('/').next())
+            .flat_map(str::chars)
+            .filter_map(|c| c.to_digit(36))
+            .max()
+            .unwrap_or(release);
+        let wanted = project_model::jdk::ct_sym_release_char(release.min(newest));
         let archive_index = self.archives.len() as u16;
         let mut prefixes: Vec<Box<str>> = Vec::new();
         let mut added = 0usize;

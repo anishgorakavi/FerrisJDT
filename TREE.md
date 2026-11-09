@@ -6,6 +6,8 @@ types, substitution, overload resolution — itself. No JVM.
 
 ```text
 Cargo.toml                Workspace: members, shared dependency versions, release profile.
+tests/fixtures/enterprise/       javac-verified Java files (generics, enums, inner classes, records, patterns);
+                                    any diagnostic on them is a false positive.
 Makefile                  build, test, lint, install, self-check, and benchmark targets.
 rustfmt.toml              Formatting: four spaces, 100 columns, no tabs.
 README.md                 Install, Neovim setup, project configuration, usage.
@@ -54,9 +56,12 @@ crates/project-model/               What the project is: roots, JDK, classpath, 
   src/config.rs                     Client and file settings, and the source level that decides
                                     which language constructs are allowed.
   src/jdk.rs                        Finds a JDK and its library: rt.jar on 8, else ct.sym.
+  src/build_files.rs                Java level read from pom.xml/build.gradle text, and the cached
+                                    classpath file a client writes; never runs a build tool.
   src/project.rs                    Source roots, classpath JARs, and the bounded,
                                     symlink-refusing source file walk.
-  tests/discovery.rs                Layout detection, exclusions, symlink refusal, limits.
+  tests/discovery.rs                Layout detection, exclusions, symlink refusal, limits, build-file level and
+                                    cached classpath.
 
 crates/java-semantic/               The semantic core. Knows nothing of LSP.
   src/lib.rs                        Crate root and the recursion bounds every walker shares.
@@ -71,6 +76,9 @@ crates/java-semantic/               The semantic core. Knows nothing of LSP.
                                     which class files do not carry.
   src/outline.rs                    Per-file package, imports, and declared classes, including
                                     local and anonymous ones. Unchanged by edits inside a method.
+  src/lombok.rs                     Members Lombok's annotations add (getters, setters, constructors,
+                                    builders, loggers), modelled from source text; nothing is generated
+                                    without a `lombok` import.
   src/lower.rs                      Lowers a parsed file into declarations with resolved types.
   src/resolve.rs                    Resolves a type name to a class in the order the language
                                     specifies, and lowers type syntax into types.
@@ -118,6 +126,10 @@ crates/java-ide/                    The features an editor asks for. Knows nothi
   src/imports.rs                    Adding an import in sorted position; organizing the block.
   src/tokens.rs                     Semantic tokens, classified by what each name resolves to.
   tests/features.rs                 One or more tests per feature, asserting what an editor shows.
+  tests/lombok.rs                   Generated members through completion, hover, definition, diagnostics,
+                                    and incremental edits.
+  tests/modern_java.rs              Records, pattern bindings, enums, qualified inner creation, and the
+                                    javac-verified enterprise fixtures.
 
 crates/ferrisjdt/                    The server binary.
   src/main.rs                       Arguments, stderr-only logging, and the --self-check entry.

@@ -106,12 +106,26 @@ never offered; it is only the hand-written case that goes undiagnosed.
 
 ## Project model gaps
 
-* **Maven and Gradle dependencies are not resolved.** The standard source
-  layouts (`src/main/java`, `src/test/java`) are found and indexed, but
-  `pom.xml` and `build.gradle` are not read. A project with third-party
-  dependencies will report their types as unknown until the JARs are listed in
-  `ferrisjdt.json` or dropped in `lib/`. This is the largest functional
-  difference from JDTLS.
+* **Maven and Gradle dependencies are resolved by the client, not the server.**
+  The server reads `.ferrisjdt/classpath.txt` (see README) and the Java level
+  from the build file's text, but never runs `mvn` or `gradle`, so without that
+  file a project's third-party types are unknown. Only Lombok's output is
+  modelled; other annotation processors (MapStruct, Dagger, QueryDSL) generate
+  nothing here. A multi-module project's classpath is the one the client
+  resolved for the module it opened.
+* **Lombok gaps.** `@Builder` on a method or constructor, `@Delegate`,
+  `@Jacksonized`, `@Builder.Default` semantics, `lombok.config` (accessor
+  conventions are the defaults), and `val` are not modelled. A hand-written
+  builder class of the name Lombok would generate disables generation for it.
+  A `@SuperBuilder` parent declared in the same file as its child is not
+  found, and `builder()` on a `@SuperBuilder` returns the concrete builder type
+  rather than `Builder<?, ?>`.
+* **Pattern binding scope is permissive.** A pattern variable is accepted from
+  the pattern to the end of its statement or block, so a use Java rejects as
+  not definitely matched is not reported.
+* **Known missed errors.** A class that does not implement an inherited
+  abstract method, assignment to a `static final` field, a missing static
+  method called through a class name, and `List<int>` are not reported.
 * **Class directories on the classpath are not supported** — JARs only. A
   dependency that is an unpacked `target/classes` has to be jarred.
 * **Multi-module projects** are indexed as one flat source set. Two modules
@@ -198,10 +212,9 @@ never offered; it is only the hand-written case that goes undiagnosed.
    change behind the weakest number in the benchmarks: the first request after
    an edit currently redoes the whole file's declarations, which is what makes
    go-to-definition cost 31 ms on a 24 KiB file instead of 3 ms.
-2. **Read Maven and Gradle dependencies.** Not by invoking the build tool on
-   every start, but by parsing `pom.xml` and the Gradle cache for JAR paths,
-   with an optional one-off `mvn dependency:build-classpath` behind a setting.
-   This is the largest functional gap against JDTLS.
+2. **Resolve Maven and Gradle dependencies without a client.** Today the client
+   writes the classpath file; parsing `pom.xml` and the Gradle cache in the
+   server would remove that step.
 3. **Formatting**, so the server is self-sufficient.
 4. **A `cargo-fuzz` target** for the class-file reader, the signature parser,
    and the completion entry point, replacing the hand-written adversarial

@@ -50,14 +50,10 @@ pub fn lower_file(db: &Db, source: &SourceFile, outline: &FileOutline) -> Vec<Cl
         };
         let type_params = lower_type_params(node, text, &mut scope);
         scopes[index] = scope.type_vars.clone();
-        lowered.push(Arc::new(lower_class(
-            class,
-            node,
-            text,
-            &scope,
-            type_params,
-            outline,
-        )));
+        let mut data = lower_class(class, node, text, &scope, type_params, outline);
+        let generated = crate::lombok::augment(&mut data, node, text, class, outline, db);
+        lowered.push(Arc::new(data));
+        lowered.extend(generated.into_iter().map(Arc::new));
     }
     lowered
 }
@@ -300,10 +296,55 @@ fn lower_class(
         }
     }
 
+    if class.kind == ClassKind::Enum {
+        let enum_type = Type::class(class.binary.clone());
+        let implicit = |name: &str, params: Vec<ParamData>, ret: Type| MethodData {
+            name: name::name(name),
+            type_params: Vec::new(),
+            params,
+            ret,
+            throws: Vec::new(),
+            visibility: Visibility::Public,
+            modifiers: Modifiers {
+                is_static: true,
+                ..Modifiers::default()
+            },
+            origin: Origin::Synthetic,
+            doc: None,
+            is_constructor: false,
+        };
+        methods.push(implicit(
+            "values",
+            Vec::new(),
+            Type::Array(Box::new(enum_type.clone())),
+        ));
+        methods.push(implicit(
+            "valueOf",
+            vec![ParamData {
+                name: name::name("name"),
+                ty: Type::string(),
+            }],
+            enum_type,
+        ));
+    }
+    let is_record = node.kind() == "record_declaration";
+    if is_record {
+        add_record_members(
+            node,
+            text,
+            scope,
+            file,
+            visibility_of(node, text, Visibility::Package),
+            &mut fields,
+            &mut methods,
+        );
+    }
+
     // A class with no declared constructor has an implicit no-argument one.
     // An anonymous class has no name to construct it by, so it gets none.
     if class.kind == ClassKind::Class
         && !class.is_anonymous
+        && !is_record
         && !methods.iter().any(|m| m.is_constructor)
     {
         methods.push(MethodData {
@@ -360,6 +401,7 @@ fn lower_class(
             "java.lang.Enum",
             vec![Type::class(class.binary.clone())],
         )),
+        ClassKind::Class if is_record => Some(Type::class("java.lang.Record")),
         ClassKind::Class => ast::named_children(node)
             .find(|c| c.kind() == "superclass")
             .and_then(|s| ast::named_children(s).next())
@@ -394,6 +436,108 @@ fn lower_class(
         nested,
         origin: source_origin(file, node, ast::field(node, "name")),
         doc: javadoc::doc_for(node, text),
+    }
+}
+
+/// A record's components are private final fields, each with a public accessor of the same name,
+/// and the canonical constructor takes them all unless the record declares one itself (a compact
+/// constructor is the canonical one, so it counts as absent here).
+fn add_record_members(
+    node: Node<'_>,
+    text: &str,
+    scope: &Scope<'_>,
+    file: crate::symbols::FileId,
+    visibility: Visibility,
+    fields: &mut Vec<FieldData>,
+    methods: &mut Vec<MethodData>,
+) {
+    let Some(list) = ast::field(node, "parameters") else {
+        return;
+    };
+    let mut params = Vec::new();
+    let mut is_varargs = false;
+    for component in ast::named_children(list) {
+        let (name_node, ty) = match component.kind() {
+            "formal_parameter" => (
+                ast::field(component, "name"),
+                ast::field(component, "type")
+                    .map(|ty| scope.lower_type(ty, text))
+                    .unwrap_or(Type::Unknown),
+            ),
+            "spread_parameter" => {
+                is_varargs = true;
+                let element = ast::named_children(component)
+                    .find(|c| !matches!(c.kind(), "variable_declarator" | "modifiers"))
+                    .map(|ty| scope.lower_type(ty, text))
+                    .unwrap_or(Type::Unknown);
+                let declarator = ast::named_children(component)
+                    .find(|c| c.kind() == "variable_declarator")
+                    .and_then(|d| ast::field(d, "name"));
+                (declarator, Type::Array(Box::new(element)))
+            }
+            _ => continue,
+        };
+        let Some(name_node) = name_node else {
+            continue;
+        };
+        let component_name = name::name(ast::text(name_node, text));
+        let origin = source_origin(file, component, Some(name_node));
+        fields.push(FieldData {
+            name: component_name.clone(),
+            ty: ty.clone(),
+            visibility: Visibility::Private,
+            modifiers: Modifiers {
+                is_final: true,
+                ..Modifiers::default()
+            },
+            origin: origin.clone(),
+            doc: None,
+            constant_value: None,
+        });
+        if !methods
+            .iter()
+            .any(|m| m.name == component_name && m.params.is_empty())
+        {
+            methods.push(MethodData {
+                name: component_name.clone(),
+                type_params: Vec::new(),
+                params: Vec::new(),
+                ret: ty.clone(),
+                throws: Vec::new(),
+                visibility: Visibility::Public,
+                modifiers: Modifiers::default(),
+                origin: origin.clone(),
+                doc: None,
+                is_constructor: false,
+            });
+        }
+        params.push(ParamData {
+            name: component_name,
+            ty,
+        });
+    }
+    let canonical_declared = methods
+        .iter()
+        .any(|m| m.is_constructor && m.params.len() == params.len());
+    if !canonical_declared {
+        let record_name = ast::field(node, "name")
+            .map(|n| name::name(ast::text(n, text)))
+            .unwrap_or_else(|| name::name("record"));
+        methods.push(MethodData {
+            name: record_name,
+            type_params: Vec::new(),
+            params,
+            ret: Type::VOID,
+            throws: Vec::new(),
+            visibility,
+            modifiers: Modifiers {
+                is_varargs,
+                ..Modifiers::default()
+            },
+            origin: Origin::Synthetic,
+            doc: None,
+            is_constructor: true,
+        });
     }
 }
 

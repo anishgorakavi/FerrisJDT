@@ -112,24 +112,40 @@ struct SourceIndex {
 
 impl SourceIndex {
     fn insert(&mut self, outline: &FileOutline) {
-        for class in &outline.classes {
-            self.by_binary.insert(class.binary.clone(), outline.file);
-            let bucket = self.by_simple.entry(class.simple.clone()).or_default();
-            if !bucket.contains(&class.binary) {
-                bucket.push(class.binary.clone());
+        let generated = outline
+            .synthetic_classes()
+            .into_iter()
+            .map(|(binary, simple, _)| (binary, simple));
+        let declared = outline
+            .classes
+            .iter()
+            .map(|c| (c.binary.clone(), c.simple.clone()));
+        for (binary, simple) in declared.chain(generated) {
+            self.by_binary.insert(binary.clone(), outline.file);
+            let bucket = self.by_simple.entry(simple).or_default();
+            if !bucket.contains(&binary) {
+                bucket.push(binary);
             }
         }
     }
 
     fn remove(&mut self, outline: &FileOutline) {
-        for class in &outline.classes {
-            if self.by_binary.get(&class.binary) == Some(&outline.file) {
-                self.by_binary.remove(&class.binary);
+        let generated = outline
+            .synthetic_classes()
+            .into_iter()
+            .map(|(binary, simple, _)| (binary, simple));
+        let declared = outline
+            .classes
+            .iter()
+            .map(|c| (c.binary.clone(), c.simple.clone()));
+        for (binary, simple) in declared.chain(generated) {
+            if self.by_binary.get(&binary) == Some(&outline.file) {
+                self.by_binary.remove(&binary);
             }
-            if let Some(bucket) = self.by_simple.get_mut(&class.simple) {
-                bucket.retain(|binary| *binary != class.binary);
+            if let Some(bucket) = self.by_simple.get_mut(&simple) {
+                bucket.retain(|b| *b != binary);
                 if bucket.is_empty() {
-                    self.by_simple.remove(&class.simple);
+                    self.by_simple.remove(&simple);
                 }
             }
         }

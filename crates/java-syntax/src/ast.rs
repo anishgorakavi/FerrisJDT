@@ -188,3 +188,10 @@ pub fn expression_ending_at(tree: &Tree, offset: u32) -> Option<Node<'_>> {
     }
     best
 }
+
+/// The outer-instance expression of a qualified creation, `outer` in `outer.new Inner()`.
+pub fn creation_qualifier<'t>(creation: Node<'t>) -> Option<Node<'t>> {
+    let type_node = field(creation, "type")?;
+    named_children(creation)
+        .find(|child| child.end_byte() <= type_node.start_byte() && is_expression(child.kind()))
+}

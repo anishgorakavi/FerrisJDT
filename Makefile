@@ -33,10 +33,11 @@ check: fmt lint test-release
 install: release
 	mkdir -p $(BIN)
 	install -m 755 target/release/ferrisjdt $(BIN)/ferrisjdt
-	@echo "installed $(BIN)/ferrisjdt"
+	install -m 755 target/release/ferrisjdt-doctor $(BIN)/ferrisjdt-doctor
+	@echo "installed $(BIN)/ferrisjdt and $(BIN)/ferrisjdt-doctor"
 
 uninstall:
-	rm -f $(BIN)/ferrisjdt
+	rm -f $(BIN)/ferrisjdt $(BIN)/ferrisjdt-doctor
 
 # Index a project and report what was found, with timings.
 selfcheck: release

@@ -529,3 +529,20 @@ fn inference_survives_incomplete_code() {
         }
     }
 }
+
+/// A project newer than any release `ct.sym` records (a Java 21 Spring project on a JDK 21)
+/// must still see `java.lang`.
+#[test]
+fn reads_the_standard_library_for_a_release_newer_than_ct_sym() {
+    let baseline = Fixture::new(&[("T.java", "class T {}")]);
+    if !baseline.has_stdlib() {
+        eprintln!("skipping: no JDK standard library indexed");
+        return;
+    }
+    let config = project_model::Config {
+        source_level: Some(21),
+        ..Default::default()
+    };
+    let fixture = Fixture::with_config(&[("T.java", "class T {}")], config);
+    assert!(fixture.db.classpath().contains("java.lang.String"));
+}

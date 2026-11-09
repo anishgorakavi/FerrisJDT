@@ -71,14 +71,20 @@ them.
 | Override and implement methods | implemented | Inherited abstract methods, stubbed to throw rather than return a made-up value. |
 | Extract variable | **not implemented** | |
 | Extract method | **not implemented** | |
-| Maven project import | **not implemented** | A Maven project's `src/main/java` and `src/test/java` are found and indexed, but `pom.xml` dependencies are not resolved. Add JARs through `ferrisjdt.json` or `lib/`. |
-| Gradle project import | **not implemented** | Same: the source layout is used, the build file is not read. |
+| Maven and Gradle dependencies | partial | The server reads JARs listed in `.ferrisjdt/classpath.txt`, which a client writes from `mvn dependency:build-classpath` or Gradle (the Neovim config does this). The server itself never runs a build tool. Tested by `reads_level_and_cached_classpath_from_a_gradle_project`. |
+| Java level from the build file | implemented | `java.version`, `maven.compiler.*`, `JavaLanguageVersion.of`, `sourceCompatibility` when `sourceLevel` is unset. Tested by `explicit_level_beats_the_pom`. |
+| Lombok | partial | `@Getter`, `@Setter`, `@Data`, `@Value`, `@With`, `@Accessors` (chain, fluent, prefix), `@NoArgsConstructor`/`@AllArgsConstructor`/`@RequiredArgsConstructor` (including `staticName`), `@Builder` (`toBuilder`, `@Singular`), `@SuperBuilder` (inheriting the parent's builder), `@FieldDefaults`, and the logger annotations (`@Slf4j` and friends). Generated members appear in completion, hover and diagnostics, and go-to-definition goes to the field. A method the class declares itself suppresses the generated one. Only active when the file imports `lombok`. Tested in `crates/java-ide/tests/lombok.rs`. |
+| Multi-module projects | partial | Opening a module whose parent `pom.xml` lists it in `<modules>`, or whose parent `settings.gradle` includes it, makes the parent the workspace, so sibling modules' sources are indexed. Tested by `opening_one_maven_module_indexes_its_siblings` and the Gradle equivalent. |
 | JUnit test discovery | **not implemented** | |
 
 ## Java language support
 
 | Construct | State |
 | --- | --- |
+| Records | implemented — component fields, accessors, canonical and compact constructors, generic and varargs records. `records_have_components_accessors_and_a_canonical_constructor` |
+| Pattern matching | implemented — `instanceof` type and record patterns, `case` patterns with guards, `var` components. Bindings are visible from the pattern to the end of the enclosing statement or block, not by definite assignment. `pattern_bindings_are_in_scope` |
+| Enums | implemented — implicit `values()` and `valueOf(String)`, constants with bodies |
+| Qualified inner creation `outer.new Inner()` | implemented — `qualified_inner_class_creation_resolves_against_the_outer_instance` |
 | Classes, interfaces, enums, annotations | implemented |
 | Fields, methods, constructors, initialisers | implemented |
 | Packages and imports, including static and on-demand | implemented |

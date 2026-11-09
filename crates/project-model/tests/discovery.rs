@@ -119,3 +119,98 @@ fn discovers_a_jdk_with_a_readable_standard_library() {
         None => eprintln!("no JDK installed; skipping"),
     }
 }
+
+#[test]
+fn reads_level_and_cached_classpath_from_a_gradle_project() {
+    let root = scratch("gradle");
+    fs::write(
+        root.join("build.gradle"),
+        "java {\n    toolchain {\n        languageVersion = JavaLanguageVersion.of(21)\n    }\n}\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join(".ferrisjdt")).unwrap();
+    let jar = root.join("dep.jar");
+    fs::write(&jar, "").unwrap();
+    fs::write(
+        root.join(".ferrisjdt/classpath.txt"),
+        format!("# generated\n{}\n/missing/gone.jar\n", jar.display()),
+    )
+    .unwrap();
+    let project = Project::load(&root, &Config::default());
+    assert_eq!(project.source_level.0, 21);
+    assert_eq!(project.classpath, vec![jar]);
+}
+
+#[test]
+fn explicit_level_beats_the_pom() {
+    let root = scratch("pom-level");
+    fs::write(
+        root.join("pom.xml"),
+        "<project><properties><java.version>17</java.version></properties></project>",
+    )
+    .unwrap();
+    let detected = Project::load(&root, &Config::default());
+    assert_eq!(detected.source_level.0, 17);
+    let config = Config {
+        source_level: Some(8),
+        ..Config::default()
+    };
+    assert_eq!(Project::load(&root, &config).source_level.0, 8);
+}
+
+#[test]
+fn opening_one_maven_module_indexes_its_siblings() {
+    let root = scratch("multi-maven");
+    fs::write(
+        root.join("pom.xml"),
+        "<project><modules><module>api</module><module>app</module></modules></project>",
+    )
+    .unwrap();
+    for module in ["api", "app"] {
+        fs::create_dir_all(root.join(module).join("src/main/java/p")).unwrap();
+        fs::write(root.join(module).join("pom.xml"), "<project/>").unwrap();
+    }
+    fs::write(
+        root.join("api/src/main/java/p/Dto.java"),
+        "package p; class Dto {}",
+    )
+    .unwrap();
+    fs::write(
+        root.join("app/src/main/java/p/Main.java"),
+        "package p; class Main {}",
+    )
+    .unwrap();
+    let project = Project::load(&root.join("app"), &Config::default());
+    assert_eq!(project.root, root);
+    let files = project.discover_source_files();
+    assert!(files.iter().any(|f| f.ends_with("Dto.java")), "{files:?}");
+    assert!(files.iter().any(|f| f.ends_with("Main.java")), "{files:?}");
+}
+
+#[test]
+fn opening_one_gradle_subproject_indexes_its_siblings() {
+    let root = scratch("multi-gradle");
+    fs::write(root.join("settings.gradle"), "include 'core', 'web'\n").unwrap();
+    for module in ["core", "web"] {
+        fs::create_dir_all(root.join(module).join("src/main/java")).unwrap();
+        fs::write(root.join(module).join("build.gradle"), "").unwrap();
+    }
+    fs::write(root.join("core/src/main/java/Core.java"), "class Core {}").unwrap();
+    fs::write(root.join("web/src/main/java/Web.java"), "class Web {}").unwrap();
+    let project = Project::load(&root.join("web"), &Config::default());
+    let files = project.discover_source_files();
+    assert!(files.iter().any(|f| f.ends_with("Core.java")), "{files:?}");
+}
+
+#[test]
+fn an_unrelated_parent_build_file_does_not_widen_the_root() {
+    let root = scratch("not-a-module");
+    fs::write(
+        root.join("pom.xml"),
+        "<project><modules><module>other</module></modules></project>",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("mine")).unwrap();
+    let project = Project::load(&root.join("mine"), &Config::default());
+    assert_eq!(project.root, root.join("mine"));
+}
