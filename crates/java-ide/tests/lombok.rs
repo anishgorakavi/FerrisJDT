@@ -408,3 +408,16 @@ fn editing_a_lombok_class_updates_generated_members_elsewhere() {
         "{after_removal:?}"
     );
 }
+
+#[test]
+fn a_fully_qualified_lombok_annotation_needs_no_import() {
+    let source = "package app;\n@lombok.Getter\npublic class Err {\n  private String message;\n}\n";
+    let found = labels(&[
+        ("Err.java", source),
+        (
+            "Use.java",
+            "package app;\npublic class Use {\n  void m(Err e) {\n    e.$0\n  }\n}\n",
+        ),
+    ]);
+    assert!(found.contains(&"getMessage".to_string()), "{found:?}");
+}

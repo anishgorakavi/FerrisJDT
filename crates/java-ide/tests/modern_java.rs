@@ -209,3 +209,20 @@ fn qualified_inner_class_creation_resolves_against_the_outer_instance() {
         assert_eq!(errors(&source.replace("in.$0", "")), Vec::<String>::new());
     }
 }
+
+#[test]
+fn try_with_resources_variables_are_in_scope_in_the_body() {
+    if !has_stdlib() {
+        return;
+    }
+    let source = "import java.util.stream.*;\nimport java.nio.file.*;\nimport java.io.*;\npublic class T {\n  void m(Path root) throws IOException {\n    try (Stream<Path> stream = Files.walk(root); BufferedReader reader = Files.newBufferedReader(root)) {\n      long n = stream.count();\n      String line = reader.readLine();\n    }\n  }\n}\n";
+    assert_eq!(errors(source), Vec::<String>::new());
+    let completion = source.replace("stream.count();", "stream.$0;");
+    assert!(labels(&completion).contains(&"filter".to_string()));
+}
+
+#[test]
+fn an_unbounded_wildcard_captures_the_declared_bound() {
+    let source = "public class T {\n  interface Marker { String tag(); }\n  interface Desc<X extends Marker> { X get(); }\n  void m(Desc<?> d) {\n    d.get().$0\n  }\n}\n";
+    assert!(labels(source).contains(&"tag".to_string()));
+}

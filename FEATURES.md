@@ -84,6 +84,7 @@ them.
 | Records | implemented — component fields, accessors, canonical and compact constructors, generic and varargs records. `records_have_components_accessors_and_a_canonical_constructor` |
 | Pattern matching | implemented — `instanceof` type and record patterns, `case` patterns with guards, `var` components. Bindings are visible from the pattern to the end of the enclosing statement or block, not by definite assignment. `pattern_bindings_are_in_scope` |
 | Enums | implemented — implicit `values()` and `valueOf(String)`, constants with bodies |
+| try-with-resources variables | implemented — typed resources and `var`; `try_with_resources_variables_are_in_scope_in_the_body` |
 | Qualified inner creation `outer.new Inner()` | implemented — `qualified_inner_class_creation_resolves_against_the_outer_instance` |
 | Classes, interfaces, enums, annotations | implemented |
 | Fields, methods, constructors, initialisers | implemented |

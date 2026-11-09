@@ -65,6 +65,8 @@ pub struct FileOutline {
     pub imports: Vec<ImportDecl>,
     /// Every class in the file, outermost first, in declaration order.
     pub classes: Vec<OutlineClass>,
+    /// The file uses Lombok: it imports it or writes an annotation as `@lombok.X`.
+    pub lombok: bool,
 }
 
 impl FileOutline {
@@ -72,6 +74,7 @@ impl FileOutline {
     /// Edits inside a method body leave this unchanged.
     pub fn same_shape(&self, other: &FileOutline) -> bool {
         self.package == other.package
+            && self.lombok == other.lombok
             && self.imports == other.imports
             && self.classes.len() == other.classes.len()
             && self.classes.iter().zip(&other.classes).all(|(a, b)| {
@@ -177,9 +180,7 @@ pub fn outline(file: FileId, source: &SourceFile) -> FileOutline {
     }
     // Builders exist only where Lombok is imported, and a class that already declares a nested
     // class of that name has written its own.
-    let lombok = imports
-        .iter()
-        .any(|i| &*i.path == "lombok" || i.path.starts_with("lombok."));
+    let lombok = crate::lombok::uses_lombok(&imports, text);
     let declared: Vec<(Option<u32>, Name)> = classes
         .iter()
         .map(|c| (c.parent, c.simple.clone()))
@@ -199,6 +200,7 @@ pub fn outline(file: FileId, source: &SourceFile) -> FileOutline {
         package,
         imports,
         classes,
+        lombok,
     }
 }
 

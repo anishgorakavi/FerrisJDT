@@ -327,13 +327,23 @@ pub fn context_at<'a>(db: &'a Db, file: FileId, offset: u32) -> Option<Context<'
                 }
             }
             "try_with_resources_statement" | "resource_specification" => {
-                for resource in ast::named_children(ancestor).filter(|c| c.kind() == "resource") {
+                // The resources sit in a `resource_specification` child of the statement.
+                let specification = if ancestor.kind() == "resource_specification" {
+                    Some(ancestor)
+                } else {
+                    ast::field(ancestor, "resources")
+                };
+                let resources = specification
+                    .into_iter()
+                    .flat_map(ast::named_children)
+                    .filter(|c| c.kind() == "resource");
+                for resource in resources {
                     if let (Some(name_node), Some(type_node)) =
                         (ast::field(resource, "name"), ast::field(resource, "type"))
                     {
                         locals.push(Local {
                             name: name::name(ast::text(name_node, text)),
-                            ty: scope_for_types.lower_type(type_node, text),
+                            ty: resource_type(type_node, text, &scope_for_types),
                             name_range: (
                                 name_node.start_byte() as u32,
                                 name_node.end_byte() as u32,
@@ -563,6 +573,15 @@ pub(crate) fn collect_block_locals(
         if statement.kind() == "local_variable_declaration" {
             collect_declaration(statement, text, scope, out);
         }
+    }
+}
+
+/// The declared type of a try-with-resources variable; `var` is left unknown rather than guessed.
+fn resource_type(type_node: Node<'_>, text: &str, scope: &Scope<'_>) -> Type {
+    if type_node.kind() == "type_identifier" && ast::text(type_node, text) == "var" {
+        Type::Unknown
+    } else {
+        scope.lower_type(type_node, text)
     }
 }
 

@@ -101,12 +101,16 @@ pub fn annotations(node: Node<'_>, text: &str) -> Vec<Ann> {
     found
 }
 
-/// True when a file imports anything from Lombok, the gate for every rule here.
-pub fn is_enabled(outline: &FileOutline) -> bool {
-    outline
-        .imports
+/// True when a file imports anything from Lombok or writes `@lombok.X`, the gate for every rule here.
+pub fn uses_lombok(imports: &[crate::outline::ImportDecl], text: &str) -> bool {
+    imports
         .iter()
         .any(|import| &*import.path == "lombok" || import.path.starts_with("lombok."))
+        || text.contains("@lombok.")
+}
+
+fn is_enabled(outline: &FileOutline) -> bool {
+    outline.lombok
 }
 
 /// The nested builder class a `@Builder` or `@SuperBuilder` declaration implies, if any.

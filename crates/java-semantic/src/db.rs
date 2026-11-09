@@ -290,6 +290,7 @@ impl Db {
                 package: None,
                 imports: Vec::new(),
                 classes: Vec::new(),
+                lombok: false,
             }),
             open_source: None,
             retained: None,
@@ -457,6 +458,7 @@ impl Db {
             package: None,
             imports: Vec::new(),
             classes: Vec::new(),
+            lombok: false,
         });
         if !outline.classes.is_empty() {
             self.index.remove(&outline);

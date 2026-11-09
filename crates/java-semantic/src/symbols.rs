@@ -238,7 +238,19 @@ impl ClassData {
         }
         if args.len() == self.type_params.len() {
             for (param, arg) in self.type_params.iter().zip(args) {
-                subst.insert(param.name.clone(), arg.clone());
+                // `Foo<?>` captures to the parameter's declared bound, so `T extends Annotation`
+                // stays an `Annotation` rather than collapsing to `Object`.
+                let captured = match (arg, param.bounds.first()) {
+                    (
+                        Type::Wildcard {
+                            kind: crate::types::WildcardKind::Unbounded,
+                            ..
+                        },
+                        Some(bound),
+                    ) => bound.erase(),
+                    _ => arg.clone(),
+                };
+                subst.insert(param.name.clone(), captured);
             }
         } else {
             for param in &self.type_params {

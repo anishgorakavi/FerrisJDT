@@ -113,6 +113,11 @@ never offered; it is only the hand-written case that goes undiagnosed.
   modelled; other annotation processors (MapStruct, Dagger, QueryDSL) generate
   nothing here. A multi-module project's classpath is the one the client
   resolved for the module it opened.
+* **Build-generated sources are invisible.** Classes produced by a build step
+  (GraphQL DGS codegen, OpenAPI or protobuf generators, annotation processors
+  other than Lombok) are reported as unknown types until the generated files
+  exist on disk under an indexed source root. On the `spring-boot-realworld`
+  sample, all 111 remaining diagnostics are of this kind.
 * **Lombok gaps.** `@Builder` on a method or constructor, `@Delegate`,
   `@Jacksonized`, `@Builder.Default` semantics, `lombok.config` (accessor
   conventions are the defaults), and `val` are not modelled. A hand-written
