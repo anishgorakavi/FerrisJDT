@@ -65,6 +65,50 @@ fn declares_module(parent: &Path, child: &Path) -> bool {
         })
 }
 
+/// Where a client leaves the source directories the build uses, generated ones included.
+pub const SOURCES_FILE: &str = ".ferrisjdt/sources.txt";
+
+/// Reads the source directories a client cached for this project, one per line, keeping the ones
+/// that still exist. Generated sources (annotation processor output, code generators) live under
+/// `build/`, which the ordinary source walk skips, so they are only found this way.
+pub fn read_sources_file(root: &Path) -> Vec<PathBuf> {
+    let Ok(text) = std::fs::read_to_string(root.join(SOURCES_FILE)) else {
+        return Vec::new();
+    };
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+        .collect()
+}
+
+/// Where a client leaves the files a build excludes from compilation.
+pub const EXCLUDED_FILE: &str = ".ferrisjdt/excluded.txt";
+
+/// Reads the source files the build leaves out of a source set (Gradle `exclude` patterns, often
+/// per profile). Indexing them would report errors the build never sees.
+pub fn read_excluded_file(root: &Path) -> Vec<PathBuf> {
+    let Ok(text) = std::fs::read_to_string(root.join(EXCLUDED_FILE)) else {
+        return Vec::new();
+    };
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Where a client leaves the Java level its build resolved (the highest any project asks for).
+pub const LEVEL_FILE: &str = ".ferrisjdt/level.txt";
+
+/// The Java level a client read from the build tool itself, which sees what the build text hides
+/// (convention plugins in `buildSrc`, toolchains, `release` options).
+pub fn read_level_file(root: &Path) -> Option<u32> {
+    let text = std::fs::read_to_string(root.join(LEVEL_FILE)).ok()?;
+    parse_level(text.trim())
+}
+
 /// The Java release a Maven or Gradle build asks for, if its file says so plainly.
 pub fn detect_source_level(root: &Path) -> Option<u32> {
     if let Ok(pom) = std::fs::read_to_string(root.join("pom.xml")) {

@@ -485,6 +485,18 @@ impl Db {
         self.classpath.class(binary)
     }
 
+    /// A class as declared in `file` when that file declares it, otherwise as the project knows it.
+    ///
+    /// Several modules of a build can declare the same qualified name (test classes especially), and
+    /// the project-wide index keeps only one of them. A file always means its own.
+    pub fn class_declared_in(&self, file: FileId, binary: &str) -> Option<ClassRef> {
+        let own = self.lowered_classes(file);
+        match own.iter().find(|class| &*class.name == binary) {
+            Some(found) => Some(found.clone()),
+            None => self.class(binary),
+        }
+    }
+
     /// Every class declared in one file, lowered and cached.
     pub fn lowered_classes(&self, file: FileId) -> Arc<Vec<ClassRef>> {
         let Some(state) = self.files.get(file.0 as usize) else {

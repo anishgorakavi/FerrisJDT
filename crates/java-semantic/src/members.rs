@@ -10,7 +10,7 @@ use crate::name::Name;
 use crate::symbols::{ClassKind, ClassRef, FieldData, MethodData, Visibility};
 use crate::types::{Substitution, Type};
 use crate::MAX_HIERARCHY_DEPTH;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Arc;
 
 /// A member found on a type, with its signature already substituted.
@@ -72,10 +72,20 @@ impl Members {
 /// return, which is how `Foo.` offers statics while `foo.` offers instance
 /// members.
 pub fn members_of(db: &Db, ty: &Type, options: LookupOptions) -> Members {
+    members_of_declared(db, ty, options, None)
+}
+
+/// `members_of` for a receiver whose class declaration is already in hand (a file's own class).
+pub fn members_of_declared(
+    db: &Db,
+    ty: &Type,
+    options: LookupOptions,
+    root: Option<&ClassRef>,
+) -> Members {
     let mut out = Members::default();
     let mut seen_classes = FxHashSet::default();
     let mut seen_fields = FxHashSet::default();
-    let mut seen_methods = FxHashSet::default();
+    let mut seen_methods: FxHashMap<String, usize> = FxHashMap::default();
     collect(
         db,
         ty,
@@ -86,8 +96,18 @@ pub fn members_of(db: &Db, ty: &Type, options: LookupOptions) -> Members {
         &mut seen_fields,
         &mut seen_methods,
         &mut out,
+        root,
     );
     out
+}
+
+/// True when `new` is a strict subtype of `old`, both fully known classes.
+fn covariant_return(db: &Db, new: &Type, old: &Type) -> bool {
+    matches!((new, old), (Type::Class { .. }, Type::Class { .. }))
+        && new != old
+        && !new.has_unknown()
+        && !old.has_unknown()
+        && is_subtype(db, new, old)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -147,8 +167,9 @@ fn collect(
     options: &LookupOptions,
     seen_classes: &mut FxHashSet<Name>,
     seen_fields: &mut FxHashSet<Name>,
-    seen_methods: &mut FxHashSet<String>,
+    seen_methods: &mut FxHashMap<String, usize>,
     out: &mut Members,
+    root: Option<&ClassRef>,
 ) {
     if depth > MAX_HIERARCHY_DEPTH {
         return;
@@ -175,6 +196,7 @@ fn collect(
                     seen_fields,
                     seen_methods,
                     out,
+                    None,
                 );
             }
         }
@@ -194,6 +216,7 @@ fn collect(
                     seen_fields,
                     seen_methods,
                     out,
+                    None,
                 );
             }
             for bound in &var.bounds {
@@ -207,6 +230,7 @@ fn collect(
                     seen_fields,
                     seen_methods,
                     out,
+                    None,
                 );
             }
         }
@@ -222,13 +246,22 @@ fn collect(
                 seen_fields,
                 seen_methods,
                 out,
+                None,
             );
         }
         Type::Class { name, args } => {
             if !seen_classes.insert(name.clone()) {
                 return;
             }
-            let Some(class) = db.class(name) else { return };
+            // The receiver's own declaration, when the caller knows it, beats the project-wide index,
+            // which keeps only one of several modules' classes of the same name.
+            let class = match root {
+                Some(declared) if declared.name == *name && depth == 0 => declared.clone(),
+                _ => match db.class(name) {
+                    Some(found) => found,
+                    None => return,
+                },
+            };
             // The receiver's type arguments bind this class's parameters; the
             // substitution collected so far applies to those arguments.
             let own: Vec<Type> = args.iter().map(|a| a.substitute(subst)).collect();
@@ -288,9 +321,23 @@ fn collect(
                 }
                 // An override replaces the inherited declaration. Erasure is
                 // the right key: that is what the JLS compares.
-                if !seen_methods.insert(substituted.erased_signature()) {
+                let signature = substituted.erased_signature();
+                if let Some(&existing) = seen_methods.get(&signature) {
+                    // The same method reached through another supertype may declare a more
+                    // specific (covariant) return type, and that is the declaration a caller
+                    // sees: `MutableHttpResponse.getHeaders()` yields `MutableHttpHeaders`
+                    // even though `HttpResponse.getHeaders()` is found first.
+                    let found = &mut out.methods[existing];
+                    if found.owner.name != class.name
+                        && covariant_return(db, &substituted.ret, &found.method.ret)
+                    {
+                        found.owner = class.clone();
+                        found.method = substituted;
+                        found.index = position as u32;
+                    }
                     continue;
                 }
+                seen_methods.insert(signature, out.methods.len());
                 out.methods.push(FoundMethod {
                     owner: class.clone(),
                     method: substituted,
@@ -326,6 +373,7 @@ fn collect(
                     seen_fields,
                     seen_methods,
                     out,
+                    None,
                 );
             }
         }

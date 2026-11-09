@@ -89,10 +89,10 @@ pub fn self_check(root: &Path, verbose: bool) -> i32 {
                 _ => {}
             }
             if verbose && item.severity == Some(lsp_types::DiagnosticSeverity::ERROR) {
+                // Relative to the project, so files of the same name in different modules differ.
                 let name = db
                     .path(file)
-                    .and_then(|p| p.file_name())
-                    .map(|n| n.to_string_lossy().to_string())
+                    .map(|p| p.strip_prefix(root).unwrap_or(p).display().to_string())
                     .unwrap_or_default();
                 reported.push((
                     format!("{name}:{}", item.range.start.line + 1),
@@ -106,7 +106,12 @@ pub fn self_check(root: &Path, verbose: bool) -> i32 {
         "diagnostics:    {errors} errors, {warnings} warnings in {:.1} ms",
         diagnostics_ms
     );
-    for (where_, message) in reported.iter().take(50) {
+    // FERRISJDT_SELFCHECK_LIMIT raises the number listed, for classifying a large project's errors.
+    let limit = std::env::var("FERRISJDT_SELFCHECK_LIMIT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(50);
+    for (where_, message) in reported.iter().take(limit) {
         println!("  {where_}: {message}");
     }
 

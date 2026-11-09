@@ -177,9 +177,12 @@ impl<'a> Inferer<'a> {
                     _ => Type::Unknown,
                 }
             }
-            "method_invocation" => match self.resolve_invocation(node) {
-                Some(found) => found.method.ret,
-                None => Type::Unknown,
+            "method_invocation" => match self.array_clone(node, depth) {
+                Some(array) => array,
+                None => match self.resolve_invocation(node) {
+                    Some(found) => found.method.ret,
+                    None => Type::Unknown,
+                },
             },
             "object_creation_expression" => self.creation_type(node, depth),
             "array_creation_expression" => {
@@ -635,6 +638,19 @@ impl<'a> Inferer<'a> {
         }
     }
 
+    /// `array.clone()` returns the array's own type, not `Object` (JLS 10.7).
+    fn array_clone(&self, node: Node<'_>, depth: u32) -> Option<Type> {
+        let name = ast::field(node, "name")?;
+        if ast::text(name, self.text()) != "clone" {
+            return None;
+        }
+        if ast::field(node, "arguments").is_some_and(|list| ast::named_children(list).count() > 0) {
+            return None;
+        }
+        let receiver = self.infer(ast::field(node, "object")?, depth + 1);
+        matches!(receiver, Type::Array(_)).then_some(receiver)
+    }
+
     fn argument_types(&self, node: Node<'_>) -> Vec<Type> {
         let Some(list) = ast::field(node, "arguments") else {
             return Vec::new();
@@ -674,11 +690,11 @@ impl<'a> Inferer<'a> {
     fn unqualified_members(&self, called: &str) -> Members {
         let mut members = Members::default();
         for (depth, enclosing) in self.ctx.enclosing.iter().enumerate() {
-            let Some(class) = self.db().class(enclosing) else {
+            let Some(class) = self.db().class_declared_in(self.ctx.file, enclosing) else {
                 continue;
             };
             let self_type = crate::lower::self_type_of(&class);
-            let found = members_of(
+            let found = crate::members::members_of_declared(
                 self.db(),
                 &self_type,
                 LookupOptions {
@@ -686,6 +702,7 @@ impl<'a> Inferer<'a> {
                     include_instance: !self.ctx.in_static_context || depth > 0,
                     ..LookupOptions::default()
                 },
+                Some(&class),
             );
             members.methods.extend(found.methods);
             members.fields.extend(found.fields);

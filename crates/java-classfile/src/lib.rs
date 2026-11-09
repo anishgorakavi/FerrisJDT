@@ -8,12 +8,14 @@ pub mod class;
 pub mod constant_pool;
 pub mod error;
 pub mod jar;
+pub mod jimage;
 pub mod reader;
 pub mod signature;
 
 pub use class::{flags, ClassInfo, FieldInfo, InnerClassInfo, MethodInfo};
 pub use error::{ClassFileError, Result};
 pub use jar::Jar;
+pub use jimage::JImage;
 pub use signature::{ClassSig, MethodSig, SigArg, SigType, TypeParamSig};
 
 /// Converts an internal JVM name (`java/util/Map$Entry`) into the source-level

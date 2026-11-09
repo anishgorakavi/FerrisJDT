@@ -48,6 +48,13 @@ pub struct OutlineClass {
     pub anonymous_base: Option<Name>,
     /// The nested builder class Lombok generates for this class, when it asks for one.
     pub builder_class: Option<BuilderDecl>,
+    /// The `extends` and `implements` types as written, without type arguments. Lets a nested class
+    /// find member types its outer class inherits while the outer class is itself still being
+    /// lowered, when its resolved supertypes are not yet available.
+    pub supertypes: Vec<Name>,
+    /// Names of the type parameters this class declares, so a type variable used in a nested class
+    /// can be attributed to the class that declares it.
+    pub type_params: Vec<Name>,
 }
 
 /// A builder class implied by `@Builder` or `@SuperBuilder`.
@@ -82,6 +89,8 @@ impl FileOutline {
                     && a.kind == b.kind
                     && a.parent == b.parent
                     && a.builder_class == b.builder_class
+                    && a.supertypes == b.supertypes
+                    && a.type_params == b.type_params
             })
     }
 
@@ -204,6 +213,44 @@ pub fn outline(file: FileId, source: &SourceFile) -> FileOutline {
     }
 }
 
+/// The names of a declaration's type parameters, as written.
+fn declared_type_params(node: Node<'_>, text: &str) -> Vec<Name> {
+    let Some(list) = ast::field(node, "type_parameters") else {
+        return Vec::new();
+    };
+    ast::named_children(list)
+        .filter(|c| c.kind() == "type_parameter")
+        .filter_map(|declaration| {
+            ast::named_children(declaration)
+                .find(|c| matches!(c.kind(), "type_identifier" | "identifier"))
+                .map(|n| name::name(ast::text(n, text)))
+        })
+        .collect()
+}
+
+/// The names after `extends` and `implements`, as written and without type arguments.
+fn written_supertypes(node: Node<'_>, text: &str) -> Vec<Name> {
+    let mut found = Vec::new();
+    for child in ast::named_children(node) {
+        match child.kind() {
+            "superclass" => {
+                found.extend(ast::named_children(child).next().map(|n| dotted(n, text)));
+            }
+            "super_interfaces" | "extends_interfaces" => {
+                for list in ast::named_children(child).filter(|c| c.kind() == "type_list") {
+                    found.extend(ast::named_children(list).map(|n| dotted(n, text)));
+                }
+            }
+            _ => {}
+        }
+    }
+    found
+        .into_iter()
+        .filter(|written| !written.is_empty())
+        .map(|written| name::name(&written))
+        .collect()
+}
+
 fn lower_import(node: Node<'_>, text: &str) -> Option<ImportDecl> {
     let mut is_static = false;
     let mut is_wildcard = false;
@@ -290,6 +337,8 @@ fn collect(
             || node.kind() == "record_declaration",
         is_anonymous: false,
         anonymous_base: None,
+        supertypes: written_supertypes(node, text),
+        type_params: declared_type_params(node, text),
         builder_class: if node.kind() == "class_declaration" {
             crate::lombok::builder_decl(node, text, simple).map(|(name, is_super)| BuilderDecl {
                 name: name::name(&name),
@@ -410,6 +459,8 @@ fn collect_anonymous(
         is_anonymous: true,
         anonymous_base: base.as_deref().map(name::name),
         builder_class: None,
+        supertypes: Vec::new(),
+        type_params: Vec::new(),
     });
     collect_in_subtree(class_body, text, package, index, out, anonymous_counter);
 }

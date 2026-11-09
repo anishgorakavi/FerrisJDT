@@ -167,10 +167,39 @@ impl<'a> Scope<'a> {
                 return Some(found);
             }
         }
-        let class = self.db.class(owner)?;
+        let Some(class) = self.db.class(owner) else {
+            return self.nested_in_written_supertypes(owner, simple, depth);
+        };
         for supertype in class.superclass.iter().chain(&class.interfaces) {
             if let Some(name) = supertype.class_name() {
                 if let Some(found) = self.nested_in(name, simple, depth + 1) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+
+    /// The fallback for a class of this file that is still being lowered: its supertypes are read as
+    /// written and resolved from the scope around it.
+    fn nested_in_written_supertypes(&self, owner: &str, simple: &str, depth: u32) -> Option<Name> {
+        let declared = self.outline.find(owner)?;
+        let mut outer = Vec::new();
+        let mut parent = declared.parent;
+        while let Some(at) = parent {
+            let class = &self.outline.classes[at as usize];
+            outer.push(class.binary.clone());
+            parent = class.parent;
+        }
+        let around = Scope {
+            db: self.db,
+            outline: self.outline,
+            enclosing: outer,
+            type_vars: Vec::new(),
+        };
+        for written in &declared.supertypes {
+            if let Some(resolved) = around.resolve_class_name(written) {
+                if let Some(found) = self.nested_in(&resolved, simple, depth + 1) {
                     return Some(found);
                 }
             }
@@ -250,13 +279,28 @@ impl<'a> Scope<'a> {
         }
     }
 
+    /// The class that declares type variable `name`: the innermost enclosing class with a type
+    /// parameter of that name, since an inner class's use of its outer class's `K` is the same
+    /// variable. A name no class declares is a method's own, attributed to the innermost class.
+    pub fn type_var_owner(&self, name: &str) -> Option<Name> {
+        self.enclosing
+            .iter()
+            .find(|class| {
+                self.outline
+                    .find(class)
+                    .is_some_and(|declared| declared.type_params.iter().any(|p| &**p == name))
+            })
+            .or_else(|| self.enclosing.first())
+            .cloned()
+    }
+
     /// Builds a type from a written name and already-lowered type arguments.
     pub fn class_type(&self, written: &str, args: Vec<Type>) -> Type {
         if !written.contains('.') {
             if let Some((name, bounds)) = self.type_var(written) {
                 return Type::Var(Box::new(TypeVar::new(
                     name.clone(),
-                    self.enclosing.first().cloned(),
+                    self.type_var_owner(name),
                     bounds.clone(),
                 )));
             }

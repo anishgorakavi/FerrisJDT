@@ -118,6 +118,14 @@ never offered; it is only the hand-written case that goes undiagnosed.
   other than Lombok) are reported as unknown types until the generated files
   exist on disk under an indexed source root. On the `spring-boot-realworld`
   sample, all 111 remaining diagnostics are of this kind.
+* **`buildSrc` and convention plugins have no Gradle API on the classpath.**
+  Java under `buildSrc`, `build-logic`, or an included build compiles against
+  `gradleApi()`, which the client's classpath does not carry, so `org.gradle.*`
+  types are reported as unknown. On the JHipster sample all of its remaining
+  diagnostics are of this kind.
+* **A Gradle project is one flat classpath.** Every module's and source set's
+  compile classpath is merged, so a class that exists only in another
+  module's dependencies resolves where javac would reject it.
 * **Lombok gaps.** `@Builder` on a method or constructor, `@Delegate`,
   `@Jacksonized`, `@Builder.Default` semantics, `lombok.config` (accessor
   conventions are the defaults), and `val` are not modelled. A hand-written

@@ -35,17 +35,20 @@ pub struct SourceFile {
     tree: Tree,
     line_index: LineIndex,
     version: i32,
+    /// True when the tree was parsed from a masked copy of `text` (see `mask_annotated_ellipsis`).
+    masked: bool,
 }
 
 impl SourceFile {
     pub fn new(text: String, version: i32) -> SourceFile {
-        let tree = parse(&text, None);
+        let (tree, masked) = parse_text(&text, None);
         let line_index = LineIndex::new(&text);
         SourceFile {
             text,
             tree,
             line_index,
             version,
+            masked,
         }
     }
 
@@ -76,7 +79,7 @@ impl SourceFile {
     /// Replaces the whole document, as a `didChange` without a range does.
     pub fn set_text(&mut self, text: String, version: i32) {
         self.text = text;
-        self.tree = parse(&self.text, None);
+        (self.tree, self.masked) = parse_text(&self.text, None);
         self.line_index = LineIndex::new(&self.text);
         self.version = version;
     }
@@ -102,7 +105,10 @@ impl SourceFile {
             old_end_position: old_end_point,
             new_end_position: new_end_point,
         });
-        self.tree = parse(&self.text, Some(&self.tree));
+        // A masked tree describes different text from `text`, so the edit's delta no longer lines up
+        // with it: reparse from scratch whenever masking was or is involved.
+        let previous = if self.masked { None } else { Some(&self.tree) };
+        (self.tree, self.masked) = parse_text(&self.text, previous);
         self.version = version;
     }
 
@@ -169,6 +175,80 @@ impl SourceFile {
             }
         }
     }
+}
+
+/// Parses `text`, masking constructs the grammar cannot read, and reports whether it did.
+/// `old` is dropped when masking applies, because it was built from different text.
+fn parse_text(text: &str, old: Option<&Tree>) -> (Tree, bool) {
+    match mask_annotated_ellipsis(text) {
+        Some(masked) => (parse(&masked, None), true),
+        None => (parse(text, old), false),
+    }
+}
+
+/// Blanks type-use annotations before a varargs ellipsis, as in `String @Nullable ... names`.
+///
+/// tree-sitter-java 0.23 has no rule for them, so a file using JSpecify-style annotations would
+/// report a syntax error at every such parameter. The annotation is replaced by spaces of the same
+/// length, so every byte offset still lines up with the real text; the annotation is not needed by
+/// any feature. Returns `None` when there is nothing to mask, which is nearly always.
+fn mask_annotated_ellipsis(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut masked: Option<Vec<u8>> = None;
+    let mut at = 0;
+    while let Some(found) = text[at..].find("...") {
+        let ellipsis = at + found;
+        at = ellipsis + 3;
+        let mut end = ellipsis;
+        // Walk back over `@Annotation` and `@Annotation(...)` groups directly before the ellipsis.
+        loop {
+            let mut cursor = end;
+            while cursor > 0 && bytes[cursor - 1].is_ascii_whitespace() {
+                cursor -= 1;
+            }
+            let mut stop = cursor;
+            if stop > 0 && bytes[stop - 1] == b')' {
+                let mut depth = 0usize;
+                while stop > 0 {
+                    stop -= 1;
+                    match bytes[stop] {
+                        b')' => depth += 1,
+                        b'(' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if depth != 0 {
+                    break;
+                }
+            }
+            let name_end = stop;
+            let mut name_start = name_end;
+            while name_start > 0
+                && (bytes[name_start - 1].is_ascii_alphanumeric()
+                    || matches!(bytes[name_start - 1], b'_' | b'$' | b'.'))
+            {
+                name_start -= 1;
+            }
+            if name_start == name_end || name_start == 0 || bytes[name_start - 1] != b'@' {
+                break;
+            }
+            let annotation_start = name_start - 1;
+            let buffer = masked.get_or_insert_with(|| bytes.to_vec());
+            for byte in &mut buffer[annotation_start..cursor] {
+                if !byte.is_ascii_whitespace() {
+                    *byte = b' ';
+                }
+            }
+            end = annotation_start;
+        }
+    }
+    // Only ASCII bytes were replaced by ASCII spaces, so the copy is still valid UTF-8.
+    masked.and_then(|buffer| String::from_utf8(buffer).ok())
 }
 
 fn parse(text: &str, old: Option<&Tree>) -> Tree {

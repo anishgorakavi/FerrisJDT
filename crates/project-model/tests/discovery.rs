@@ -214,3 +214,96 @@ fn an_unrelated_parent_build_file_does_not_widen_the_root() {
     let project = Project::load(&root.join("mine"), &Config::default());
     assert_eq!(project.root, root.join("mine"));
 }
+
+#[test]
+fn indexes_generated_sources_listed_by_the_client() {
+    let root = scratch("generated");
+    fs::create_dir_all(root.join("src/main/java/p")).unwrap();
+    fs::write(root.join("src/main/java/p/A.java"), "package p; class A {}").unwrap();
+    // Annotation processor output sits under `build`, which the ordinary walk skips.
+    let generated = root.join("build/generated/sources/annotationProcessor/java/main/p");
+    fs::create_dir_all(&generated).unwrap();
+    fs::write(
+        generated.join("AMapperImpl.java"),
+        "package p; class AMapperImpl {}",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join(".ferrisjdt")).unwrap();
+    fs::write(
+        root.join(".ferrisjdt/sources.txt"),
+        format!(
+            "{}\n{}\n/missing/dir\n",
+            root.join("src/main/java").display(),
+            root.join("build/generated/sources/annotationProcessor/java/main")
+                .display()
+        ),
+    )
+    .unwrap();
+    let project = Project::load(&root, &Config::default());
+    let files = project.discover_source_files();
+    assert!(files.iter().any(|f| f.ends_with("A.java")), "{files:?}");
+    assert!(
+        files.iter().any(|f| f.ends_with("AMapperImpl.java")),
+        "{files:?}"
+    );
+    assert_eq!(files.len(), 2, "no duplicates: {files:?}");
+}
+
+#[test]
+fn files_the_build_excludes_are_not_indexed() {
+    let root = scratch("excluded");
+    fs::create_dir_all(root.join("src/test/java/p")).unwrap();
+    fs::write(
+        root.join("src/test/java/p/KeepTest.java"),
+        "package p; class KeepTest {}",
+    )
+    .unwrap();
+    let skipped = root.join("src/test/java/p/ProdOnly.java");
+    fs::write(&skipped, "package p; class ProdOnly {}").unwrap();
+    fs::create_dir_all(root.join(".ferrisjdt")).unwrap();
+    fs::write(
+        root.join(".ferrisjdt/excluded.txt"),
+        format!("{}\n", skipped.display()),
+    )
+    .unwrap();
+    let files = Project::load(&root, &Config::default()).discover_source_files();
+    assert!(
+        files.iter().any(|f| f.ends_with("KeepTest.java")),
+        "{files:?}"
+    );
+    assert!(
+        !files.iter().any(|f| f.ends_with("ProdOnly.java")),
+        "{files:?}"
+    );
+}
+
+#[test]
+fn the_level_a_client_read_from_the_build_tool_wins_over_build_file_text() {
+    let root = scratch("level-file");
+    // A convention plugin elsewhere sets the real level; the root build file says nothing.
+    fs::write(root.join("build.gradle"), "plugins { id 'java' }\n").unwrap();
+    fs::create_dir_all(root.join(".ferrisjdt")).unwrap();
+    fs::write(root.join(".ferrisjdt/level.txt"), "25\n").unwrap();
+    assert_eq!(Project::load(&root, &Config::default()).source_level.0, 25);
+    let config = Config {
+        source_level: Some(11),
+        ..Config::default()
+    };
+    assert_eq!(Project::load(&root, &config).source_level.0, 11);
+}
+
+#[test]
+fn a_jdk_home_is_matched_by_its_release_file_not_its_name() {
+    use project_model::jdk;
+    let root = scratch("jdk-release");
+    // A home named like Java 25 whose release file says 17 must not count as 25.
+    let home = root.join("jdk-25");
+    fs::create_dir_all(home.join("lib")).unwrap();
+    fs::write(home.join("release"), "JAVA_VERSION=\"17.0.2\"\n").unwrap();
+    fs::write(home.join("lib/ct.sym"), "").unwrap();
+    assert_eq!(jdk::home_major(&home), Some(17));
+    let old = root.join("jdk8");
+    fs::create_dir_all(&old).unwrap();
+    fs::write(old.join("release"), "JAVA_VERSION=\"1.8.0_402\"\n").unwrap();
+    assert_eq!(jdk::home_major(&old), Some(8));
+}

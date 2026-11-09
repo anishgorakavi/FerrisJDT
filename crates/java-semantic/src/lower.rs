@@ -410,7 +410,7 @@ fn lower_class(
             .or_else(|| (&*class.binary != "java.lang.Object").then(Type::object)),
     };
 
-    let interfaces = ast::named_children(node)
+    let mut interfaces: Vec<Type> = ast::named_children(node)
         .find(|c| matches!(c.kind(), "super_interfaces" | "extends_interfaces"))
         .and_then(|list| ast::named_children(list).find(|c| c.kind() == "type_list"))
         .map(|list| {
@@ -419,6 +419,10 @@ fn lower_class(
                 .collect()
         })
         .unwrap_or_default();
+    // An annotation interface implicitly extends `java.lang.annotation.Annotation`.
+    if class.kind == ClassKind::Annotation {
+        interfaces.push(Type::class("java.lang.annotation.Annotation"));
+    }
 
     ClassData {
         name: class.binary.clone(),

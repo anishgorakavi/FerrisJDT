@@ -237,20 +237,34 @@ impl ClassData {
             return subst;
         }
         if args.len() == self.type_params.len() {
+            let is_open = |arg: &Type| {
+                matches!(
+                    arg,
+                    Type::Wildcard {
+                        kind: crate::types::WildcardKind::Unbounded,
+                        ..
+                    }
+                )
+            };
             for (param, arg) in self.type_params.iter().zip(args) {
-                // `Foo<?>` captures to the parameter's declared bound, so `T extends Annotation`
-                // stays an `Annotation` rather than collapsing to `Object`.
-                let captured = match (arg, param.bounds.first()) {
-                    (
-                        Type::Wildcard {
-                            kind: crate::types::WildcardKind::Unbounded,
-                            ..
-                        },
-                        Some(bound),
-                    ) => bound.erase(),
-                    _ => arg.clone(),
-                };
-                subst.insert(param.name.clone(), captured);
+                if !is_open(arg) || param.bounds.is_empty() {
+                    subst.insert(param.name.clone(), arg.clone());
+                }
+            }
+            // `Foo<?>` captures to the parameter's declared bound, so `T extends Annotation` stays
+            // an `Annotation` rather than collapsing to `Object`. The bound keeps the other
+            // arguments (`SELF extends Assert<SELF, ACTUAL, ELEMENT>` with ELEMENT known), so a
+            // fluent self-typed chain does not lose its element type. A bound that mentions its own
+            // parameter takes `Unknown` there, so the chain stands down rather than guessing.
+            let known = subst.clone();
+            for (param, arg) in self.type_params.iter().zip(args) {
+                if is_open(arg) {
+                    if let Some(bound) = param.bounds.first() {
+                        let mut view = known.clone();
+                        view.insert(param.name.clone(), Type::Unknown);
+                        subst.insert(param.name.clone(), bound.substitute(&view));
+                    }
+                }
             }
         } else {
             for param in &self.type_params {

@@ -86,8 +86,15 @@ pub fn discover(explicit: Option<&Path>, release: u32) -> Option<Jdk> {
     let mut consider = |home: &Path, exact: bool| -> Option<Jdk> {
         let jdk = jdk_at(home, release)?;
         let is_rt_jar = matches!(jdk.stdlib, StdlibSource::RtJar(_));
-        // An rt.jar from the requested release is the best possible match.
-        if exact && is_rt_jar {
+        // The home's own `release` file is authoritative: `java_home -v 25` happily answers with a
+        // JDK 21, so a name or a tool's say-so is only a guess.
+        let exact = match home_major(home) {
+            Some(major) => major == release,
+            None => exact,
+        };
+        // A JDK of exactly the requested release is the best possible match: its `rt.jar` for 8,
+        // its `lib/modules` for the release `ct.sym` omits.
+        if exact && (is_rt_jar || release >= 9) {
             return Some(jdk);
         }
         if fallback.is_none() {
@@ -96,7 +103,20 @@ pub fn discover(explicit: Option<&Path>, release: u32) -> Option<Jdk> {
         None
     };
 
-    // `java_home -v <release>` asks macOS for that exact release.
+    // Homebrew keeps each release in its own keg that `java_home` does not list.
+    if cfg!(target_os = "macos") {
+        for prefix in ["/opt/homebrew/opt", "/usr/local/opt"] {
+            let home = PathBuf::from(format!(
+                "{prefix}/openjdk@{release}/libexec/openjdk.jdk/Contents/Home"
+            ));
+            if home.is_dir() {
+                if let Some(jdk) = consider(&home, true) {
+                    return Some(jdk);
+                }
+            }
+        }
+    }
+    // `java_home -v <release>` asks macOS for that release.
     if cfg!(target_os = "macos") {
         let version = if release == 8 {
             "1.8".to_string()
@@ -236,6 +256,21 @@ pub fn candidate_homes() -> Vec<(String, PathBuf)> {
         fresh
     });
     out
+}
+
+/// The major Java version in a JDK home's `release` file: `JAVA_VERSION="21.0.1"` is 21 and
+/// `"1.8.0_402"` is 8.
+pub fn home_major(home: &Path) -> Option<u32> {
+    let text = std::fs::read_to_string(home.join("release")).ok()?;
+    let line = text.lines().find(|l| l.starts_with("JAVA_VERSION="))?;
+    let version = line.trim_start_matches("JAVA_VERSION=").trim_matches('"');
+    let mut parts = version.split(['.', '-', '+', '_']);
+    let first: u32 = parts.next()?.parse().ok()?;
+    if first == 1 {
+        parts.next()?.parse().ok()
+    } else {
+        Some(first)
+    }
 }
 
 fn home_looks_like_release(home: &Path, release: u32) -> bool {

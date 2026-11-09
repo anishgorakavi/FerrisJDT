@@ -16,9 +16,24 @@ use crate::types::{Primitive, Substitution, Type};
 
 /// Whether a value of type `from` may be assigned to `to` (JLS 5.2), including
 /// boxing, unboxing, and widening.
+/// True when no resolution of an unknown part could make `from` fit `to`: a class or primitive
+/// value is never an array. Without this check an unsolved `T[]` parameter, which is
+/// `Unknown[]`, would accept anything and let a varargs overload outrank a fixed-arity one.
+fn never_assignable(db: &Db, from: &Type, to: &Type) -> bool {
+    if matches!(to, Type::Array(_)) && matches!(from, Type::Class { .. } | Type::Primitive(_)) {
+        return true;
+    }
+    // Unknown type arguments say nothing about the classes themselves: a `List<String>` is never a
+    // `Predicate<?>`, however `T` came out.
+    matches!((from, to), (Type::Class { .. }, Type::Class { .. }))
+        && !is_subtype(db, &from.erase(), &to.erase())
+}
+
 pub fn is_assignable(db: &Db, from: &Type, to: &Type) -> bool {
     if from.has_unknown() || to.has_unknown() {
-        return true;
+        // Unknown parts say nothing about the classes themselves; only when no resolution could
+        // make them fit is the answer no.
+        return !never_assignable(db, from, to);
     }
     if from == to {
         return true;
@@ -74,7 +89,9 @@ pub fn is_assignable(db: &Db, from: &Type, to: &Type) -> bool {
 /// Strict invocation: subtyping and primitive widening only, no boxing.
 fn is_assignable_strict(db: &Db, from: &Type, to: &Type) -> bool {
     if from.has_unknown() || to.has_unknown() {
-        return true;
+        // Unknown parts say nothing about the classes themselves; only when no resolution could
+        // make them fit is the answer no.
+        return !never_assignable(db, from, to);
     }
     if from == to {
         return true;
@@ -211,14 +228,25 @@ fn more_specific(db: &Db, left: &FoundMethod, right: &FoundMethod) -> bool {
         // Fewer parameters means the fixed-arity form, which is preferred.
         return a.len() < b.len();
     }
+    // The method being compared against is generic in its own variables, which stand for whatever
+    // fits their bounds, so `List<String>` is more specific than a bare `T`.
+    let bind = |method: &FoundMethod| {
+        let mut bound = Substitution::new();
+        for param in &method.method.type_params {
+            let erased = param.bounds.first().map(Type::erase);
+            bound.insert(param.name.clone(), erased.unwrap_or_else(Type::object));
+        }
+        bound
+    };
+    let (for_left, for_right) = (bind(left), bind(right));
     let left_into_right = a
         .iter()
         .zip(b)
-        .all(|(x, y)| is_assignable(db, &x.ty, &y.ty));
+        .all(|(x, y)| is_assignable(db, &x.ty, &y.ty.substitute(&for_right)));
     let right_into_left = b
         .iter()
         .zip(a)
-        .all(|(x, y)| is_assignable(db, &x.ty, &y.ty));
+        .all(|(x, y)| is_assignable(db, &x.ty, &y.ty.substitute(&for_left)));
     if left_into_right != right_into_left {
         return left_into_right;
     }

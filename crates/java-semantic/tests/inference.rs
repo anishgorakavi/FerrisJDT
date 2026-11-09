@@ -546,3 +546,55 @@ fn reads_the_standard_library_for_a_release_newer_than_ct_sym() {
     let fixture = Fixture::with_config(&[("T.java", "class T {}")], config);
     assert!(fixture.db.classpath().contains("java.lang.String"));
 }
+
+/// The major version in a JDK home's `release` file, e.g. `JAVA_VERSION="21.0.13"` is 21.
+fn jdk_major(home: &std::path::Path) -> Option<u32> {
+    let text = std::fs::read_to_string(home.join("release")).ok()?;
+    let line = text.lines().find(|l| l.starts_with("JAVA_VERSION="))?;
+    let version = line.trim_start_matches("JAVA_VERSION=").trim_matches('"');
+    let first = version.split(['.', '-', '+']).next()?;
+    // Java 8 reports "1.8.0_x".
+    if first == "1" {
+        version.split('.').nth(1)?.parse().ok()
+    } else {
+        first.parse().ok()
+    }
+}
+
+/// `ct.sym` has no entry for the JDK's own release, so APIs added in it, such as
+/// `List.getFirst`, must come from the `lib/modules` image.
+#[test]
+fn apis_added_in_the_jdks_own_release_are_visible() {
+    let baseline = Fixture::new(&[("T.java", "class T {}")]);
+    let Some(jdk) = baseline.db.project().jdk.clone() else {
+        eprintln!("skipping: no JDK found");
+        return;
+    };
+    let Some(major) = jdk_major(&jdk.home).filter(|m| *m >= 21) else {
+        eprintln!("skipping: JDK is older than 21");
+        return;
+    };
+    let config = project_model::Config {
+        source_level: Some(major),
+        ..Default::default()
+    };
+    let fixture = Fixture::with_config(&[("T.java", "class T {}")], config);
+    let list = fixture
+        .db
+        .class("java.util.List")
+        .expect("java.util.List is indexed");
+    assert!(
+        list.methods.iter().any(|m| &*m.name == "getFirst"),
+        "List.getFirst (Java 21) should be visible at source level {major}"
+    );
+    assert!(fixture
+        .db
+        .classpath()
+        .contains("java.util.SequencedCollection"));
+    // The overlay must not leak JDK-internal packages.
+    assert!(!fixture.db.classpath().contains("jdk.internal.misc.Unsafe"));
+    assert!(!fixture
+        .db
+        .classpath()
+        .contains("sun.nio.ch.FileChannelImpl"));
+}

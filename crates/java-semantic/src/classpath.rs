@@ -11,7 +11,9 @@ use crate::symbols::{
     Visibility,
 };
 use crate::types::{Type, TypeVar, WildcardKind};
-use java_classfile::{class, flags, signature::SigArg, ClassInfo, Jar, SigType, TypeParamSig};
+use java_classfile::{
+    class, flags, signature::SigArg, ClassInfo, JImage, Jar, SigType, TypeParamSig,
+};
 use project_model::{Project, StdlibSource};
 use rustc_hash::FxHashMap;
 use std::path::Path;
@@ -23,12 +25,19 @@ use std::sync::{Arc, RwLock};
 /// rather than risking stale entries.
 const MAX_CACHED_CLASSES: usize = 8192;
 
+/// Where an archive's class bytes come from.
+enum Store {
+    /// A ZIP. `suffix` is the entry extension: `.class` in a JAR, `.sig` in `ct.sym`.
+    Jar { jar: Jar, suffix: &'static str },
+    /// The JDK's own `lib/modules`; each prefix is a module name.
+    Image(JImage),
+}
+
 struct Archive {
-    jar: Jar,
-    /// File extension of class entries: `.class` in a JAR, `.sig` in `ct.sym`.
-    suffix: &'static str,
+    store: Store,
     /// Interned path prefixes. A JAR has the single empty prefix; `ct.sym`
-    /// entries are prefixed with a release and module directory.
+    /// entries are prefixed with a release and module directory; a jimage
+    /// archive has one prefix per module.
     prefixes: Vec<Box<str>>,
     display: Arc<str>,
 }
@@ -70,7 +79,12 @@ impl Classpath {
         if let Some(jdk) = &project.jdk {
             match &jdk.stdlib {
                 StdlibSource::RtJar(path) => classpath.add_jar(path),
-                StdlibSource::CtSym { path, release } => classpath.add_ct_sym(path, *release),
+                StdlibSource::CtSym { path, release } => {
+                    // `ct.sym` omits the JDK's own release; that one is read from `lib/modules`.
+                    if classpath.add_ct_sym(path, *release) {
+                        classpath.add_jimage(&path.with_file_name("modules"));
+                    }
+                }
             }
             if let Some(sources) = &jdk.sources {
                 match Jar::open(sources) {
@@ -125,8 +139,10 @@ impl Classpath {
         }
         tracing::debug!(path = %path.display(), classes = added, "indexed archive");
         self.archives.push(Archive {
-            jar,
-            suffix: ".class",
+            store: Store::Jar {
+                jar,
+                suffix: ".class",
+            },
             prefixes: vec![Box::from("")],
             display: Arc::from(path.to_string_lossy().as_ref()),
         });
@@ -142,13 +158,14 @@ impl Classpath {
     ///
     /// `ct.sym` omits the JDK's own release, which lives in the `modules` image
     /// instead, so a request for that release or a newer one reads the newest
-    /// release the archive does hold.
-    pub fn add_ct_sym(&mut self, path: &Path, release: u32) {
+    /// release the archive does hold. Returns true in that case, when the caller should
+    /// overlay the image with `add_jimage`.
+    pub fn add_ct_sym(&mut self, path: &Path, release: u32) -> bool {
         let jar = match Jar::open(path) {
             Ok(jar) => jar,
             Err(error) => {
                 tracing::warn!(path = %path.display(), %error, "skipping unreadable ct.sym");
-                return;
+                return false;
             }
         };
         let newest = jar
@@ -196,9 +213,81 @@ impl Classpath {
         }
         tracing::debug!(path = %path.display(), classes = added, release, "indexed ct.sym");
         self.archives.push(Archive {
-            jar,
-            suffix: ".sig",
+            store: Store::Jar {
+                jar,
+                suffix: ".sig",
+            },
             prefixes,
+            display: Arc::from(path.to_string_lossy().as_ref()),
+        });
+        release > newest
+    }
+
+    /// Overlays the JDK's `lib/modules` on the `ct.sym` classes already indexed.
+    ///
+    /// `ct.sym` supplies which classes are public API; the image supplies their current
+    /// bodies, so members added in the JDK's own release (`List.getFirst`) are visible, and it
+    /// supplies public classes new in that release (`SequencedCollection`). Packages that
+    /// `ct.sym` does not list are internal and are never indexed.
+    pub fn add_jimage(&mut self, path: &Path) {
+        let image = match JImage::open(path) {
+            Ok(image) => image,
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "ignoring unreadable jdk modules image");
+                return;
+            }
+        };
+        let known: rustc_hash::FxHashSet<&str> =
+            self.classes.iter().map(|entry| &*entry.binary).collect();
+        let packages: rustc_hash::FxHashSet<&str> = known
+            .iter()
+            .map(|binary| name::package_of(binary))
+            .collect();
+        let archive_index = self.archives.len() as u16;
+        let mut modules: Vec<Box<str>> = Vec::new();
+        let mut entries: Vec<ClassEntry> = Vec::new();
+        let (mut replaced, mut added) = (0usize, 0usize);
+        image.for_each_class(|module, internal| {
+            let binary = internal.replace('/', ".");
+            if !packages.contains(name::package_of(&binary)) {
+                return;
+            }
+            if known.contains(binary.as_str()) {
+                replaced += 1;
+            } else {
+                // A class new in this release: index it only if it is public API.
+                let simple = name::simple_name(&binary);
+                if simple.rsplit('$').next().is_some_and(|last| last.starts_with(|c: char| c.is_ascii_digit())) {
+                    return;
+                }
+                let public = matches!(
+                    image.read_class(module, internal),
+                    Ok(Some(bytes)) if class::parse(&bytes).is_ok_and(|info| info.access & flags::PUBLIC != 0)
+                );
+                if !public {
+                    return;
+                }
+                added += 1;
+            }
+            let prefix = match modules.iter().position(|m| **m == *module) {
+                Some(index) => index,
+                None => {
+                    modules.push(Box::from(module));
+                    modules.len() - 1
+                }
+            };
+            entries.push(ClassEntry {
+                binary: binary.into_boxed_str(),
+                archive: archive_index,
+                prefix: prefix as u16,
+            });
+        });
+        tracing::debug!(path = %path.display(), replaced, added, "overlaid jdk modules image");
+        // Earlier entries win when the index is deduplicated, so the image goes first.
+        self.classes.splice(0..0, entries);
+        self.archives.push(Archive {
+            store: Store::Image(image),
+            prefixes: modules,
             display: Arc::from(path.to_string_lossy().as_ref()),
         });
     }
@@ -313,12 +402,12 @@ impl Classpath {
         let entry = self.classes.get(self.index_of(binary)?)?;
         let archive = self.archives.get(entry.archive as usize)?;
         let prefix = archive.prefixes.get(entry.prefix as usize)?;
-        let path = format!(
-            "{prefix}{}{}",
-            entry.binary.replace('.', "/"),
-            archive.suffix
-        );
-        let bytes = match archive.jar.read(&path) {
+        let internal = entry.binary.replace('.', "/");
+        let read = match &archive.store {
+            Store::Jar { jar, suffix } => jar.read(&format!("{prefix}{internal}{suffix}")),
+            Store::Image(image) => image.read_class(prefix, &internal),
+        };
+        let bytes = match read {
             Ok(Some(bytes)) => bytes,
             Ok(None) => return None,
             Err(error) => {

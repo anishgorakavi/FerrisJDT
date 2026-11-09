@@ -38,6 +38,11 @@ pub struct Project {
     /// Directories to search for sources. Derived roots are added by the index
     /// once package declarations are known.
     pub source_roots: Vec<PathBuf>,
+    /// Directories a client listed in `.ferrisjdt/sources.txt`. Each is walked from its own top, so
+    /// generated sources under an excluded directory name such as `build` are still indexed.
+    pub listed_source_roots: Vec<PathBuf>,
+    /// Files the build excludes from compilation, from `.ferrisjdt/excluded.txt`.
+    pub excluded_files: Vec<PathBuf>,
     pub max_source_files: usize,
     excludes: Vec<String>,
 }
@@ -53,6 +58,8 @@ impl Project {
         let source_level = SourceLevel(
             config
                 .source_level
+                .or_else(|| build_files::read_level_file(opened))
+                .or_else(|| build_files::read_level_file(root))
                 .or_else(|| build_files::detect_source_level(opened))
                 .or_else(|| build_files::detect_source_level(root))
                 .unwrap_or(8),
@@ -119,12 +126,24 @@ impl Project {
             }
         }
 
+        let mut listed_source_roots = build_files::read_sources_file(root);
+        if opened != root {
+            listed_source_roots.extend(build_files::read_sources_file(opened));
+        }
+
+        let mut excluded_files = build_files::read_excluded_file(root);
+        if opened != root {
+            excluded_files.extend(build_files::read_excluded_file(opened));
+        }
+
         Project {
             root: root.to_path_buf(),
             source_level,
             jdk,
             classpath,
             source_roots,
+            listed_source_roots,
+            excluded_files,
             max_source_files: config.max_source_files.unwrap_or(DEFAULT_MAX_SOURCE_FILES),
             excludes,
         }
@@ -141,11 +160,14 @@ impl Project {
         // Nested roots would yield duplicates; keep only the outermost.
         roots.sort();
         roots.dedup_by(|inner, outer| inner.starts_with(&*outer));
-        for root in &roots {
+        for root in roots.iter().chain(&self.listed_source_roots) {
             self.walk(root, 0, &mut found);
         }
         found.sort();
         found.dedup();
+        if !self.excluded_files.is_empty() {
+            found.retain(|file| !self.excluded_files.contains(file));
+        }
         found
     }
 

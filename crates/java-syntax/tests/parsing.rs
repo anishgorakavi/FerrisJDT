@@ -135,3 +135,57 @@ fn identifier_at_resolves_either_side_of_the_cursor() {
     let node = ast::identifier_at(file.tree(), after).expect("at the end of an identifier");
     assert_eq!(ast::text(node, file.text()), "compareTo");
 }
+
+#[test]
+fn type_use_annotations_before_a_varargs_ellipsis_parse_cleanly() {
+    for parameter in [
+        "String @Nullable ... names",
+        "String @Nullable... names",
+        "Class<? extends Annotation> @org.jspecify.annotations.Nullable ... annotations",
+        "int @A @B(\"x\") ... values",
+    ] {
+        let source = format!("class A {{ void f({parameter}) {{}} }}");
+        let file = SourceFile::new(source.clone(), 1);
+        assert!(
+            file.syntax_errors().is_empty(),
+            "{parameter}: {:?}",
+            file.syntax_errors()
+        );
+        // Offsets are those of the real text: the declaration is still found where it is written.
+        assert_eq!(file.text(), source);
+        let root = file.tree().root_node();
+        assert_eq!(root.end_byte(), source.len());
+    }
+}
+
+#[test]
+fn an_ordinary_ellipsis_is_left_alone_and_real_errors_still_show() {
+    let ok = SourceFile::new("class A { void f(String... names) {} }".to_string(), 1);
+    assert!(ok.syntax_errors().is_empty());
+    let broken = SourceFile::new("class A { void f(String @Nullable ... ) {} ".to_string(), 1);
+    assert!(!broken.syntax_errors().is_empty());
+}
+
+#[test]
+fn editing_a_file_with_masked_annotations_matches_a_fresh_parse() {
+    use java_syntax::Position;
+    let mut file = SourceFile::new(
+        "class A {\n  void f(String @Nullable ... names) {}\n  void g() {}\n}\n".to_string(),
+        1,
+    );
+    // Type inside g(), then break the masked parameter, then repair it.
+    file.apply_change(
+        Position::new(2, 12),
+        Position::new(2, 12),
+        " int x = 1; ",
+        2,
+    );
+    assert!(file.syntax_errors().is_empty());
+    file.apply_change(Position::new(1, 19), Position::new(1, 28), "", 3);
+    let fresh = SourceFile::new(file.text().to_string(), 3);
+    assert_eq!(file.syntax_errors().len(), fresh.syntax_errors().len());
+    assert_eq!(
+        file.tree().root_node().to_sexp(),
+        fresh.tree().root_node().to_sexp()
+    );
+}

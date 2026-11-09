@@ -45,9 +45,12 @@ crates/java-classfile/              Reads .class files and JARs. Knows nothing o
                                     Method bodies are skipped entirely.
   src/jar.rs                        A minimal read-only ZIP reader; names share one arena so
                                     indexing rt.jar costs about a megabyte.
+  src/jimage.rs                     The JDK's lib/modules container: index in memory, class bytes read on
+                                    demand; supplies the JDK's own release, which ct.sym omits.
   src/error.rs                      The crate's error type; untrusted input never panics.
   tests/signature.rs                Descriptor and signature parsing, wildcards, bounds, nested
                                     types, malformed input.
+  tests/jimage.rs                   Malformed images are errors; a real JDK's classes decode by name.
   tests/jar.rs                      Decodes the real JDK 8 rt.jar, plus truncated and corrupted
                                     input.
 

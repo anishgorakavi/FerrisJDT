@@ -110,7 +110,7 @@ impl<'a> Context<'a> {
         if let Some((var, bounds)) = self.type_vars.iter().rev().find(|(n, _)| &**n == name) {
             return Some(Resolved::TypeVar(TypeVar::new(
                 var.clone(),
-                self.enclosing.first().cloned(),
+                self.type_scope().type_var_owner(var),
                 bounds.clone(),
             )));
         }
@@ -130,9 +130,9 @@ impl<'a> Context<'a> {
     /// Looks for a field on the enclosing classes and what they inherit.
     pub fn resolve_field(&self, name: &str) -> Option<Resolved> {
         for (depth, enclosing) in self.enclosing.iter().enumerate() {
-            let class = self.db.class(enclosing)?;
+            let class = self.db.class_declared_in(self.file, enclosing)?;
             let self_type = lower::self_type_of(&class);
-            let members = crate::members::members_of(
+            let members = crate::members::members_of_declared(
                 self.db,
                 &self_type,
                 crate::members::LookupOptions {
@@ -142,6 +142,7 @@ impl<'a> Context<'a> {
                     include_instance: !self.in_static_context || depth > 0,
                     ..crate::members::LookupOptions::default()
                 },
+                Some(&class),
             );
             if let Some(found) = members.field(name) {
                 if self.in_static_context && !found.field.modifiers.is_static && depth == 0 {
@@ -225,11 +226,13 @@ pub fn context_at<'a>(db: &'a Db, file: FileId, offset: u32) -> Option<Context<'
         index = class.parent;
     }
 
-    let class = enclosing.first().and_then(|name| db.class(name));
+    let class = enclosing
+        .first()
+        .and_then(|name| db.class_declared_in(file, name));
     let mut type_vars: Vec<(Name, Vec<Type>)> = Vec::new();
     // Outer classes first so inner declarations shadow them.
     for name in enclosing.iter().rev() {
-        if let Some(outer) = db.class(name) {
+        if let Some(outer) = db.class_declared_in(file, name) {
             for param in &outer.type_params {
                 type_vars.push((param.name.clone(), param.bounds.clone()));
             }
@@ -257,8 +260,17 @@ pub fn context_at<'a>(db: &'a Db, file: FileId, offset: u32) -> Option<Context<'
     let mut locals = Vec::new();
     let mut in_static_context = false;
     let mut method_node_range = None;
+    // Once the walk leaves the innermost class body, a `static` further out belongs to an enclosing
+    // class's member, and says nothing about the instance members of the class the cursor is in.
+    let mut left_innermost_class = false;
 
     for ancestor in ast::ancestors(node) {
+        if matches!(
+            ancestor.kind(),
+            "class_body" | "enum_body" | "interface_body" | "annotation_type_body"
+        ) {
+            left_innermost_class = true;
+        }
         match ancestor.kind() {
             "block" | "constructor_body" | "switch_block" | "switch_block_statement_group" => {
                 collect_block_locals(ancestor, offset, text, &scope_for_types, &mut locals);
@@ -359,10 +371,12 @@ pub fn context_at<'a>(db: &'a Db, file: FileId, offset: u32) -> Option<Context<'
             "method_declaration"
             | "constructor_declaration"
             | "compact_constructor_declaration" => {
-                method_node_range =
-                    Some((ancestor.start_byte() as u32, ancestor.end_byte() as u32));
-                in_static_context =
-                    in_static_context || crate::outline::has_modifier(ancestor, text, "static");
+                if !left_innermost_class {
+                    method_node_range =
+                        Some((ancestor.start_byte() as u32, ancestor.end_byte() as u32));
+                    in_static_context =
+                        in_static_context || crate::outline::has_modifier(ancestor, text, "static");
+                }
                 collect_parameters(ancestor, text, &scope_for_types, &mut locals);
                 // A compact constructor has no parameter list; the record's components are its
                 // parameters.
@@ -375,10 +389,16 @@ pub fn context_at<'a>(db: &'a Db, file: FileId, offset: u32) -> Option<Context<'
                 }
             }
             "field_declaration" => {
-                in_static_context =
-                    in_static_context || crate::outline::has_modifier(ancestor, text, "static");
+                if !left_innermost_class {
+                    in_static_context =
+                        in_static_context || crate::outline::has_modifier(ancestor, text, "static");
+                }
             }
-            "static_initializer" => in_static_context = true,
+            "static_initializer" => {
+                if !left_innermost_class {
+                    in_static_context = true;
+                }
+            }
             _ => {}
         }
     }
