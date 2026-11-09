@@ -94,7 +94,17 @@ impl<'d> Inference<'d> {
         }
         let was = std::mem::replace(&mut self.fill_only, true);
         match (declared_return, expected) {
-            (Type::Var(_), _) => self.bind_at(declared_return, expected, 0),
+            // The expected type only bounds the result from above, so it cannot fix a
+            // variable whose declared bound it does not satisfy (`Object o = max(...)`
+            // with `E extends Number` leaves `E` open, not `Object`).
+            // A wildcard target is a capture variable javac would pick as the result; guessing a
+            // concrete type for it would then fail the `? extends T` write check.
+            (Type::Var(_), Type::Wildcard { .. }) => {}
+            (Type::Var(var), _) => {
+                if self.expected_fits_bounds(&var.name, expected) {
+                    self.bind_at(declared_return, expected, 0);
+                }
+            }
             (_, Type::Class { name, args }) if !args.is_empty() => {
                 if let Some(Type::Class { args: viewed, .. }) =
                     view_as(self.db, declared_return, name)
@@ -107,6 +117,20 @@ impl<'d> Inference<'d> {
             _ => {}
         }
         self.fill_only = was;
+    }
+
+    /// Whether `ty` is a subtype of every declared bound of the variable `name`, judged on erasures.
+    fn expected_fits_bounds(&self, name: &str, ty: &Type) -> bool {
+        if ty.has_unknown() || !matches!(ty, Type::Class { .. } | Type::Array(_)) {
+            return true;
+        }
+        let Some(param) = self.params.iter().find(|p| &*p.name == name) else {
+            return true;
+        };
+        param
+            .bounds
+            .iter()
+            .all(|bound| is_object(bound) || is_subtype(self.db, ty, &bound.erase()))
     }
 
     fn bind_at(&mut self, declared: &Type, actual: &Type, depth: u32) {
@@ -213,7 +237,9 @@ impl<'d> Inference<'d> {
     pub fn finish(self) -> Substitution {
         let mut result = self.solved.clone();
         for param in &self.params {
-            if self.is_solved(&param.name) {
+            // A binding with unknown parts (`EvictingQueue<Unknown>`) is still closer to the truth
+            // than the declared bound (`Collection<T>`), and diagnostics stand down on its unknowns.
+            if self.solved.get(&param.name).is_some() {
                 continue;
             }
             let fallback = match param.bounds.first() {

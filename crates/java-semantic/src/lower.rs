@@ -364,11 +364,16 @@ fn lower_class(
     // An anonymous class extends or implements exactly the type named in the
     // `new` expression; which of the two depends on what that type is.
     if class.is_anonymous {
-        let base = class
-            .anonymous_base
-            .as_deref()
-            .map(|written| scope.class_type(written, Vec::new()))
-            .unwrap_or(Type::Unknown);
+        // The written type keeps its arguments (`new Iterator<String>() {...}`), so inherited
+        // members see `String` rather than the raw type's erasure.
+        let base = match ast::field(node, "type") {
+            Some(written) => scope.lower_type(written, text),
+            None => class
+                .anonymous_base
+                .as_deref()
+                .map(|written| scope.class_type(written, Vec::new()))
+                .unwrap_or(Type::Unknown),
+        };
         let base_is_interface = base
             .class_name()
             .and_then(|binary| scope.db.class(binary))

@@ -133,10 +133,18 @@ them. Inference never guesses: see LIMITATIONS.md.
 | Instantiating an abstract type | `incompatible-types` | implemented |
 | Duplicate declarations | `duplicate-declaration` | implemented, for locals in one block |
 | Invalid return types | `return-type` | implemented, including a missing return |
+| Constant narrowing | `incompatible-types` | implemented — `byte b = 3;`, `char c = 'a' + 1;` and `return 1;` from a `byte` method are accepted when the constant fits; a name that might be a constant variable is given the benefit of the doubt |
 | Inaccessible members | `inaccessible` | partial — private fields and methods; other visibility rules are not checked |
 | Missing imports | `unknown-type` | implemented |
 | Unused imports | `unused-import` | implemented, as a hint |
 | Language level violations | `language-level` | implemented — lambdas, `var`, records, text blocks, switch expressions |
+
+Found by checking the Gradle build tool's own sources (`tests/gradle_regressions.rs`): `I extends T`
+converts to `T`; `Outer.this` keeps the outer type arguments; `new Base<String>() {...}` inherits
+members with `String` substituted; `getClass()` is `Class<? extends X>`; an expected type no longer
+overrides a bounded inference variable; a lambda with `return value;` skips void overloads; octal
+literals such as `0_700` parse; and a package named `build`, `out`, `bin` or `target` inside a source
+root is indexed.
 
 Parser errors, semantic errors, and hints are distinguished by severity and by
 code. Semantic checks are skipped inside any statement the parser recovered

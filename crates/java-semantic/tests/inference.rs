@@ -598,3 +598,24 @@ fn apis_added_in_the_jdks_own_release_are_visible() {
         .classpath()
         .contains("sun.nio.ch.FileChannelImpl"));
 }
+
+#[test]
+fn static_interface_methods_are_not_inherited() {
+    let config = project_model::Config {
+        source_level: Some(21),
+        ..project_model::Config::default()
+    };
+    let fixture = Fixture::with_config(&[("T.java", "class T {}")], config);
+    if !fixture.has_stdlib() {
+        return;
+    }
+    // `List.of` belongs to List alone (JLS 8.4.8); an implementing class does not have it.
+    let list = Type::generic("java.util.List", vec![Type::string()]);
+    let on_list = java_semantic::members::members_of(&fixture.db, &list, LookupOptions::default());
+    assert!(!on_list.methods_named("of").is_empty());
+    let array_list = Type::generic("java.util.ArrayList", vec![Type::string()]);
+    let on_class =
+        java_semantic::members::members_of(&fixture.db, &array_list, LookupOptions::default());
+    assert!(on_class.methods_named("of").is_empty());
+    assert!(on_class.methods_named("copyOf").is_empty());
+}

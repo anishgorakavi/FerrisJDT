@@ -189,3 +189,15 @@ fn editing_a_file_with_masked_annotations_matches_a_fresh_parse() {
         fresh.tree().root_node().to_sexp()
     );
 }
+
+#[test]
+fn octal_literal_with_underscore_after_the_leading_zero_parses() {
+    let src = "class A { int f(int mode) { return (mode & 0_700) >> 6; } int g = 0__17; String s = \"0_9\"; }";
+    let file = SourceFile::new(src.to_string(), 1);
+    assert!(
+        file.syntax_errors().is_empty(),
+        "{:?}",
+        file.syntax_errors()
+    );
+    assert_eq!(file.text(), src, "masking must not change the stored text");
+}

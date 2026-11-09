@@ -5,6 +5,7 @@
 
 pub mod code_actions;
 pub mod completion;
+mod constants;
 pub mod convert;
 pub mod diagnostics;
 pub mod hover;

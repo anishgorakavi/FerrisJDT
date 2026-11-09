@@ -15,7 +15,7 @@ use crate::overload;
 use crate::scope::{self, Context, Local, Resolved};
 use crate::solve::{self, Inference};
 use crate::symbols::{ClassRef, MethodData};
-use crate::types::{Primitive, Substitution, Type};
+use crate::types::{Primitive, Substitution, Type, WildcardKind};
 use crate::MAX_EXPRESSION_DEPTH;
 use java_syntax::{ast, Node};
 use std::cell::{Cell, RefCell};
@@ -180,7 +180,9 @@ impl<'a> Inferer<'a> {
             "method_invocation" => match self.array_clone(node, depth) {
                 Some(array) => array,
                 None => match self.resolve_invocation(node) {
-                    Some(found) => found.method.ret,
+                    Some(found) => self
+                        .get_class_type(&found, node, depth)
+                        .unwrap_or(found.method.ret),
                     None => Type::Unknown,
                 },
             },
@@ -344,7 +346,11 @@ impl<'a> Inferer<'a> {
                     return Type::generic("java.lang.Class", vec![Type::class(class)]);
                 }
                 if field_name == "this" {
-                    return Type::class(class);
+                    // `Outer.this` is `Outer<T, ...>` with its own variables, not the raw type.
+                    return match self.db().class(&class) {
+                        Some(data) => data.self_type(),
+                        None => Type::class(class),
+                    };
                 }
                 let members =
                     members_of(self.db(), &Type::class(class), self.static_lookup_options());
@@ -651,6 +657,32 @@ impl<'a> Inferer<'a> {
         matches!(receiver, Type::Array(_)).then_some(receiver)
     }
 
+    /// JLS 4.3.2: `x.getClass()` has type `Class<? extends |X|>`, where `|X|` is the erasure of the
+    /// static type of `x`. `Object.getClass` itself is declared as `Class<?>`.
+    fn get_class_type(&self, found: &FoundMethod, node: Node<'_>, depth: u32) -> Option<Type> {
+        if &*found.method.name != "getClass"
+            || !found.method.params.is_empty()
+            || &*found.owner.name != "java.lang.Object"
+        {
+            return None;
+        }
+        let receiver = match ast::field(node, "object") {
+            Some(object) => self.infer(object, depth + 1),
+            None => self.ctx.self_type.clone()?,
+        };
+        let erased = match receiver.upper_bound().erase() {
+            erased @ Type::Class { .. } => erased,
+            _ => return None,
+        };
+        Some(Type::generic(
+            "java.lang.Class",
+            vec![Type::Wildcard {
+                kind: WildcardKind::Extends,
+                bound: Some(Box::new(erased)),
+            }],
+        ))
+    }
+
     fn argument_types(&self, node: Node<'_>) -> Vec<Type> {
         let Some(list) = ast::field(node, "arguments") else {
             return Vec::new();
@@ -704,8 +736,14 @@ impl<'a> Inferer<'a> {
                 },
                 Some(&class),
             );
+            let declares_called = found.methods.iter().any(|m| &*m.method.name == called);
             members.methods.extend(found.methods);
             members.fields.extend(found.fields);
+            // JLS 15.12.1: the innermost class with a member of that name decides; an outer
+            // class's method of the same name is shadowed, not an overload candidate.
+            if declares_called {
+                break;
+            }
         }
         if members.methods.iter().any(|m| &*m.method.name == called) {
             return members;
@@ -788,13 +826,14 @@ impl<'a> Inferer<'a> {
         let Some(list) = ast::field(node, "arguments") else {
             return candidates;
         };
-        let lambdas: Vec<(usize, usize)> = ast::named_children(list)
+        let lambdas: Vec<(usize, usize, LambdaShape)> = ast::named_children(list)
             .enumerate()
             .filter(|(_, argument)| argument.kind() == "lambda_expression")
             .map(|(index, lambda)| {
                 (
                     index,
                     scope::lambda_parameter_names(lambda, self.text()).len(),
+                    lambda_shape(lambda),
                 )
             })
             .collect();
@@ -805,12 +844,15 @@ impl<'a> Inferer<'a> {
             .iter()
             .copied()
             .filter(|found| {
-                lambdas.iter().all(|(index, arity)| {
+                lambdas.iter().all(|(index, arity, shape)| {
                     let Some(param) = found.method.params.get(*index) else {
                         return true;
                     };
                     match functional_interface_method(self.db(), &param.ty) {
-                        Some(function) => function.method.params.len() == *arity,
+                        Some(function) => {
+                            function.method.params.len() == *arity
+                                && shape.fits(function.method.ret.is_void())
+                        }
                         None => true,
                     }
                 })
@@ -1244,4 +1286,61 @@ fn param_for_argument(method: &MethodData, index: usize, spread: bool) -> Option
         };
     }
     params.get(index).map(|param| param.ty.clone())
+}
+
+/// Whether a lambda body can serve a void function, a value function, or either (JLS 15.27.3).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LambdaShape {
+    VoidOnly,
+    ValueOnly,
+    Either,
+}
+
+impl LambdaShape {
+    /// Whether a functional interface whose method is void (`returns_void`) can take this lambda.
+    fn fits(self, returns_void: bool) -> bool {
+        match self {
+            LambdaShape::Either => true,
+            LambdaShape::VoidOnly => returns_void,
+            LambdaShape::ValueOnly => !returns_void,
+        }
+    }
+}
+
+/// Classifies a lambda by its body: `x -> { return x; }` needs a value, `x -> { run(x); }` must
+/// be void, and a lone method call, assignment or creation may be either.
+fn lambda_shape(lambda: Node<'_>) -> LambdaShape {
+    let Some(body) = ast::field(lambda, "body") else {
+        return LambdaShape::Either;
+    };
+    if body.kind() != "block" {
+        return match body.kind() {
+            "method_invocation"
+            | "assignment_expression"
+            | "update_expression"
+            | "object_creation_expression" => LambdaShape::Either,
+            _ => LambdaShape::ValueOnly,
+        };
+    }
+    if block_returns_value(body) {
+        return LambdaShape::ValueOnly;
+    }
+    // A block that only ever throws is compatible with both.
+    let ends_in_throw = ast::named_children(body)
+        .last()
+        .is_some_and(|last| last.kind() == "throw_statement");
+    if ends_in_throw {
+        LambdaShape::Either
+    } else {
+        LambdaShape::VoidOnly
+    }
+}
+
+/// Whether a `return <expression>;` appears in `node`, not counting nested lambdas and classes.
+fn block_returns_value(node: Node<'_>) -> bool {
+    ast::named_children(node).any(|child| match child.kind() {
+        "return_statement" => ast::named_children(child).next().is_some(),
+        "lambda_expression" | "class_body" | "object_creation_expression" => false,
+        _ => block_returns_value(child),
+    })
 }

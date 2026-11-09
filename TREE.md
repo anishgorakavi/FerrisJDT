@@ -123,6 +123,8 @@ crates/java-ide/                    The features an editor asks for. Knows nothi
   src/symbols.rs                    Document symbols, workspace symbols, selection ranges.
   src/diagnostics.rs                Syntax and semantic diagnostics, reported only where the
                                     analysis is complete.
+  src/constants.rs                  Constant narrowing (`byte b = 3;`): folds integer constant
+                                    expressions so a fitting `int` is not reported.
   src/signature.rs                  Signature help: which overload, and which parameter.
   src/code_actions.rs               Quick fixes, organize imports, and generation of constructors,
                                     accessors, and overrides.
@@ -133,6 +135,8 @@ crates/java-ide/                    The features an editor asks for. Knows nothi
                                     and incremental edits.
   tests/modern_java.rs              Records, pattern bindings, enums, qualified inner creation, and the
                                     javac-verified enterprise fixtures.
+  tests/gradle_regressions.rs       Valid Java from the Gradle build tool's sources that used to be
+                                    flagged: bounded variables, `Outer.this`, anonymous bases, lambdas.
 
 crates/ferrisjdt/                    The server binary.
   src/main.rs                       Arguments, stderr-only logging, and the --self-check entry.

@@ -11,6 +11,7 @@
 //! Syntax errors are reported separately and always, because a parse failure
 //! is a fact about the text rather than a judgement about its meaning.
 
+use crate::constants;
 use crate::convert;
 use crate::render;
 use java_semantic::infer::{Inferer, Receiver};
@@ -696,6 +697,7 @@ impl<'a> Checker<'a> {
             }
             let range = (value.start_byte() as u32, value.end_byte() as u32);
             if !overload::is_assignable(self.db, &actual, &declared)
+                && !constants::narrows_by_constant(value, self.text(), &actual, &declared)
                 && !self.already_reported_within(range)
             {
                 self.error(
@@ -757,6 +759,7 @@ impl<'a> Checker<'a> {
                 }
                 let range = (value.start_byte() as u32, value.end_byte() as u32);
                 if !overload::is_assignable(self.db, &actual, &declared)
+                    && !constants::narrows_by_constant(value, self.text(), &actual, &declared)
                     && !self.already_reported_within(range)
                 {
                     self.error(

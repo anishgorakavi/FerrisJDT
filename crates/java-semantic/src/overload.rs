@@ -76,6 +76,12 @@ pub fn is_assignable(db: &Db, from: &Type, to: &Type) -> bool {
         ) if !matches!(to, Type::Wildcard { .. }) => is_assignable(db, bound, to),
         // An `? extends T` or bare `?` target cannot be written to safely.
         (_, Type::Wildcard { .. }) => matches!(from, Type::Null),
+        // `I extends T` is a `T`: a variable converts to a variable it is (transitively) bounded by.
+        (Type::Var(var), Type::Var(_)) if var.bounds.iter().any(|b| matches!(b, Type::Var(_))) => {
+            var.bounds
+                .iter()
+                .any(|bound| matches!(bound, Type::Var(_)) && is_assignable(db, bound, to))
+        }
         (_, Type::Var(_)) => {
             // Assigning to a type variable is only safe for null or the
             // variable itself, which the equality check above covered.
