@@ -149,6 +149,8 @@ crates/ferrisjdt/                    The server binary.
   src/status.rs                     ferrisjdt/status: index and cache counters. Optional; no
                                     standard feature depends on it.
   src/selfcheck.rs                  Indexes a project and reports findings with timings.
+                                    FERRISJDT_SELFCHECK_LIMIT lists more errors,
+                                    FERRISJDT_SELFCHECK_ONLY keeps files whose path contains it.
   src/memory.rs                     Resident set size from the operating system.
   tests/protocol.rs                 Drives the real binary over stdio: handshake, incremental
                                     sync, each feature, and that stdout carries only protocol.

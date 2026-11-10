@@ -383,7 +383,8 @@ fn collect_in_subtree(
             collect(node, text, package, Some(owner), out, anonymous_counter);
             continue;
         }
-        if node.kind() == "object_creation_expression" {
+        // `A(1) { ... }` in an enum is an anonymous subclass of the enum.
+        if matches!(node.kind(), "object_creation_expression" | "enum_constant") {
             if let Some(class_body) = ast::named_children(node).find(|c| c.kind() == "class_body") {
                 collect_anonymous(
                     node,
@@ -436,7 +437,11 @@ fn collect_anonymous(
         }
     };
     let binary = format!("{top_level}${anonymous_counter}");
-    let base = ast::field(creation, "type").map(|ty| dotted(ty, text));
+    let base = ast::field(creation, "type")
+        .map(|ty| dotted(ty, text))
+        .or_else(|| {
+            (creation.kind() == "enum_constant").then(|| out[owner as usize].binary.to_string())
+        });
     let index = out.len() as u32;
     out.push(OutlineClass {
         binary: name::name(&binary),

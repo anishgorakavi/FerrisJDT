@@ -452,22 +452,29 @@ fn visibility_of(access: u16) -> Visibility {
     }
 }
 
-fn modifiers_of(access: u16, deprecated: bool, is_interface_member: bool) -> Modifiers {
+/// Modifiers from class-file access flags. 0x0040 is `volatile` on a field and `bridge` on a method,
+/// and 0x0080 is `transient` or `varargs` the same way, so the member kind decides.
+fn modifiers_of(
+    access: u16,
+    deprecated: bool,
+    is_interface_member: bool,
+    is_method: bool,
+) -> Modifiers {
     Modifiers {
         is_static: access & flags::STATIC != 0,
         is_final: access & flags::FINAL != 0,
         is_abstract: access & flags::ABSTRACT != 0,
         is_synchronized: access & flags::SYNCHRONIZED != 0,
         is_native: access & flags::NATIVE != 0,
-        is_transient: access & flags::TRANSIENT != 0,
-        is_volatile: access & flags::VOLATILE != 0,
+        is_transient: !is_method && access & flags::TRANSIENT != 0,
+        is_volatile: !is_method && access & flags::VOLATILE != 0,
         // A concrete, non-static interface method is a default method.
         is_default: is_interface_member
             && access & flags::ABSTRACT == 0
             && access & flags::STATIC == 0,
-        is_varargs: access & flags::VARARGS != 0,
+        is_varargs: is_method && access & flags::VARARGS != 0,
         is_deprecated: deprecated,
-        is_synthetic: access & (flags::SYNTHETIC | flags::BRIDGE) != 0,
+        is_synthetic: access & flags::SYNTHETIC != 0 || (is_method && access & flags::BRIDGE != 0),
     }
 }
 
@@ -595,7 +602,7 @@ pub fn lower_class_file(info: &ClassInfo, archive: &Arc<str>) -> ClassData {
             name: name::name(&field.name),
             ty: convert(&field.ty, &scope),
             visibility: visibility_of(field.access),
-            modifiers: modifiers_of(field.access, field.deprecated, is_interface),
+            modifiers: modifiers_of(field.access, field.deprecated, is_interface, false),
             origin: origin.clone(),
             doc: None,
             constant_value: None,
@@ -645,7 +652,7 @@ pub fn lower_class_file(info: &ClassInfo, archive: &Arc<str>) -> ClassData {
                     .map(|t| convert(t, &method_scope))
                     .collect(),
                 visibility: visibility_of(method.access),
-                modifiers: modifiers_of(method.access, method.deprecated, is_interface),
+                modifiers: modifiers_of(method.access, method.deprecated, is_interface, true),
                 origin: origin.clone(),
                 doc: None,
                 is_constructor,
@@ -666,7 +673,7 @@ pub fn lower_class_file(info: &ClassInfo, archive: &Arc<str>) -> ClassData {
         name: binary,
         kind,
         visibility: visibility_of(info.access),
-        modifiers: modifiers_of(info.access, info.deprecated, false),
+        modifiers: modifiers_of(info.access, info.deprecated, false, false),
         type_params,
         superclass,
         interfaces,

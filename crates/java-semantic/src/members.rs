@@ -7,7 +7,8 @@
 
 use crate::db::Db;
 use crate::name::Name;
-use crate::symbols::{ClassKind, ClassRef, FieldData, MethodData, Visibility};
+use crate::solve::view_as;
+use crate::symbols::{ClassData, ClassKind, ClassRef, FieldData, MethodData, Visibility};
 use crate::types::{Substitution, Type};
 use crate::MAX_HIERARCHY_DEPTH;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -108,6 +109,9 @@ fn covariant_return(db: &Db, new: &Type, old: &Type) -> bool {
         && !new.has_unknown()
         && !old.has_unknown()
         && is_subtype(db, new, old)
+        // Subtyping here compares classes, so `Coll<? extends Bin>` and `Coll<? extends Soft>` are
+        // each a subtype of the other; only a strictly narrower class is a covariant override.
+        && !is_subtype(db, old, new)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -368,6 +372,7 @@ fn collect(
             }
             for supertype in supertypes {
                 let resolved = supertype.substitute(&next);
+                let before = (out.fields.len(), out.methods.len());
                 collect(
                     db,
                     &resolved,
@@ -380,7 +385,79 @@ fn collect(
                     out,
                     None,
                 );
+                if let Some((inner, outer)) = inherited_outer_arguments(db, &class, &resolved) {
+                    apply_outer_arguments(out, before, &inner, &outer);
+                }
             }
+        }
+    }
+}
+
+/// For a class extending an inner class of a generic class it also sits inside
+/// (`class Sub<T> extends Base<T> { class It extends BaseIt {} }`), the inner superclass and the
+/// substitution of its outer class's variables, read off the enclosing class's own supertypes.
+fn inherited_outer_arguments(
+    db: &Db,
+    class: &ClassData,
+    supertype: &Type,
+) -> Option<(Name, Substitution)> {
+    let inner_name = supertype.class_name()?;
+    let outer_name = crate::name::enclosing_class(inner_name)?;
+    let inner = db.class(inner_name)?;
+    if inner.kind != ClassKind::Class || inner.modifiers.is_static {
+        return None;
+    }
+    let outer = db.class(outer_name)?;
+    // A class declared inside an interface is implicitly static: it has no enclosing instance.
+    if outer.type_params.is_empty() || outer.kind != ClassKind::Class {
+        return None;
+    }
+    let mut enclosing = Some(&*class.name);
+    while let Some(candidate) = enclosing {
+        if let Some(data) = db.class(candidate) {
+            if let Some(Type::Class { args, .. }) = view_as(db, &data.self_type(), &outer.name) {
+                if args.len() == outer.type_params.len() {
+                    let mut subst = Substitution::new();
+                    for (param, arg) in outer.type_params.iter().zip(args) {
+                        subst.insert(param.name.clone(), arg);
+                    }
+                    return Some((inner.name.clone(), subst));
+                }
+            }
+        }
+        enclosing = crate::name::enclosing_class(candidate);
+    }
+    None
+}
+
+/// Applies [`inherited_outer_arguments`] to the members of `ty` as seen from code inside `from`,
+/// for a receiver such as `super` or a local whose type is an inherited inner class.
+pub fn apply_inherited_outer(db: &Db, from: &ClassData, ty: &Type, members: &mut Members) {
+    if let Some((inner, outer)) = inherited_outer_arguments(db, from, ty) {
+        apply_outer_arguments(members, (0, 0), &inner, &outer);
+    }
+}
+
+/// Substitutes the outer class's variables into the members `inner` contributed since `before`.
+fn apply_outer_arguments(
+    out: &mut Members,
+    before: (usize, usize),
+    inner: &Name,
+    outer: &Substitution,
+) {
+    for found in &mut out.fields[before.0..] {
+        if found.owner.name == *inner {
+            found.field.ty = found.field.ty.substitute(outer);
+        }
+    }
+    for found in &mut out.methods[before.1..] {
+        if found.owner.name == *inner {
+            // The method's own `<T>` shadows the outer class's `T`.
+            let applicable = outer.without(&found.method.type_params);
+            for param in &mut found.method.params {
+                param.ty = param.ty.substitute(&applicable);
+            }
+            found.method.ret = found.method.ret.substitute(&applicable);
         }
     }
 }

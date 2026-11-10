@@ -304,11 +304,7 @@ fn field_target(context: &Context<'_>, receiver: &Receiver, written: &str) -> Op
                     name: found.field.name.clone(),
                 }),
                 // `Outer.Inner` is a nested type, not a field.
-                None => {
-                    let nested = format!("{binary}${written}");
-                    db.has_class(&nested)
-                        .then(|| Target::Class(name::name(&nested)))
-                }
+                None => java_semantic::resolve::member_type(db, binary, written).map(Target::Class),
             }
         }
         Receiver::Package(package) => {

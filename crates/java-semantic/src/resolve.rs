@@ -123,13 +123,11 @@ impl<'a> Scope<'a> {
         // Resolve the leading simple name, then append the rest as nesting.
         let head = &written[..first_dot];
         let rest = &written[first_dot + 1..];
-        let base = self.resolve_simple(head)?;
-        let mut candidate = base.to_string();
+        let mut current = self.resolve_simple(head)?;
         for segment in rest.split('.') {
-            candidate.push('$');
-            candidate.push_str(segment);
+            current = member_type(self.db, &current, segment)?;
         }
-        self.existing_binary(&candidate)
+        Some(current)
     }
 
     /// Accepts a dotted name that may denote a nested class, trying `$` in
@@ -316,6 +314,29 @@ impl<'a> Scope<'a> {
     pub fn resolve_class(&self, written: &str) -> Option<ClassRef> {
         self.db.class(&self.resolve_class_name(written)?)
     }
+}
+
+/// The member type `simple` of `owner`, declared there or inherited from a supertype, so
+/// `Sub.Attribute` finds a type that only `Sub`'s superclass declares.
+pub fn member_type(db: &Db, owner: &str, simple: &str) -> Option<Name> {
+    member_type_at(db, owner, simple, 0)
+}
+
+fn member_type_at(db: &Db, owner: &str, simple: &str, depth: u32) -> Option<Name> {
+    if depth > crate::MAX_HIERARCHY_DEPTH {
+        return None;
+    }
+    let direct = format!("{owner}${simple}");
+    if db.has_class(&direct) {
+        return Some(name::name(&direct));
+    }
+    let class = db.class(owner)?;
+    class
+        .superclass
+        .iter()
+        .chain(&class.interfaces)
+        .filter_map(|supertype| supertype.class_name())
+        .find_map(|supertype| member_type_at(db, supertype, simple, depth + 1))
 }
 
 pub fn qualify(package: &str, simple: &str) -> String {

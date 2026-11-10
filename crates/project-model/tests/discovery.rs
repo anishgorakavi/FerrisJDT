@@ -331,3 +331,27 @@ fn packages_named_like_build_output_are_indexed_inside_a_source_root() {
     assert!(files.iter().any(|f| f.ends_with("State.java")));
     assert!(files.iter().any(|f| f.ends_with("Sink.java")));
 }
+
+#[test]
+fn a_listed_project_without_a_conventional_layout_does_not_scan_the_whole_tree() {
+    let root = scratch("listed-only");
+    fs::create_dir_all(root.join("modules/a/src/main/java/p")).unwrap();
+    fs::write(
+        root.join("modules/a/src/main/java/p/A.java"),
+        "package p; class A {}",
+    )
+    .unwrap();
+    // Documentation and templates ship `.java` files that no build compiles.
+    fs::create_dir_all(root.join("docs/templates")).unwrap();
+    fs::write(root.join("docs/templates/Template.java"), "${not java}").unwrap();
+    fs::create_dir_all(root.join(".ferrisjdt")).unwrap();
+    fs::write(
+        root.join(".ferrisjdt/sources.txt"),
+        format!("{}\n", root.join("modules/a/src/main/java").display()),
+    )
+    .unwrap();
+    let project = Project::load(&root, &Config::default());
+    let files = project.discover_source_files();
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert!(files[0].ends_with("A.java"));
+}

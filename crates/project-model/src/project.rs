@@ -109,8 +109,13 @@ impl Project {
             };
             push_root(path, &mut source_roots);
         }
-        // A flat directory of .java files is the common course-project layout.
-        if source_roots.is_empty() {
+        let mut listed_source_roots = build_files::read_sources_file(root);
+        if opened != root {
+            listed_source_roots.extend(build_files::read_sources_file(opened));
+        }
+        // A flat directory of .java files is the common course-project layout. A build tool's own
+        // list of source directories says where the code is, so the whole tree is not scanned too.
+        if source_roots.is_empty() && listed_source_roots.is_empty() {
             source_roots.push(root.to_path_buf());
         }
 
@@ -138,11 +143,6 @@ impl Project {
             } else if path.is_file() {
                 classpath.push(path);
             }
-        }
-
-        let mut listed_source_roots = build_files::read_sources_file(root);
-        if opened != root {
-            listed_source_roots.extend(build_files::read_sources_file(opened));
         }
 
         let mut excluded_files = build_files::read_excluded_file(root);

@@ -144,7 +144,15 @@ converts to `T`; `Outer.this` keeps the outer type arguments; `new Base<String>(
 members with `String` substituted; `getClass()` is `Class<? extends X>`; an expected type no longer
 overrides a bounded inference variable; a lambda with `return value;` skips void overloads; octal
 literals such as `0_700` parse; and a package named `build`, `out`, `bin` or `target` inside a source
-root is indexed.
+root is indexed. A second round, with the real Gradle classpath resolved by Gradle itself: volatile and
+transient fields of JDK classes (`FilterInputStream.in`) are visible; a classic `switch` statement is
+not a Java 14 construct; a variable declared under one `case:` is in scope in the next; enum constant
+bodies (`A { ... }`) are anonymous subclasses with their own members and `super`; `Sub.Member` finds a
+member type its superclass declares; an inner class extending an inherited inner class of a generic
+class gets the outer type arguments; `Outer.super::m` is not a type; `new Base<>() {...}` leaves
+`Base`'s arguments unknown; a super wildcard (`Action<? super T>`) and an expected type bound a
+variable without overriding what the arguments say; and a lone `() -> call()` lambda prefers the
+overload that returns a value.
 
 Parser errors, semantic errors, and hints are distinguished by severity and by
 code. Semantic checks are skipped inside any statement the parser recovered

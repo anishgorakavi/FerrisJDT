@@ -198,7 +198,9 @@ impl<'a> Checker<'a> {
                 }
             }
             "switch_expression" => {
-                if !self.level.allows_switch_expressions() {
+                // The grammar uses this node for the classic `switch` statement too, which every
+                // level accepts; only arrow rules and a switch used as a value need Java 14.
+                if !self.level.allows_switch_expressions() && is_modern_switch(node) {
                     self.error(
                         node,
                         codes::LANGUAGE_LEVEL,
@@ -265,6 +267,10 @@ impl<'a> Checker<'a> {
             }
         }
         let written = java_semantic::outline::dotted(node, self.text());
+        // The grammar reads the `Outer.super` of `Outer.super::add` as a scoped type name.
+        if written.ends_with(".super") {
+            return;
+        }
         let Some(scope) = self.context_for(node).cloned() else {
             return;
         };
@@ -410,7 +416,7 @@ impl<'a> Checker<'a> {
                 let members = inferer.members_for(&ty, LookupOptions::default());
                 if members.field(written).is_some()
                     || !members.methods_named(written).is_empty()
-                    || self.db.has_class(&format!("{binary}${written}"))
+                    || java_semantic::resolve::member_type(self.db, &binary, written).is_some()
                 {
                     return;
                 }
@@ -1028,3 +1034,26 @@ pub fn contains(range: &Range, position: lsp_types::Position) -> bool {
 
 /// Re-exported so the server can render a method in a diagnostic message.
 pub use render::method_declaration;
+
+/// Whether a `switch` uses a Java 14 form: arrow rules, or a position that needs a value.
+fn is_modern_switch(node: Node<'_>) -> bool {
+    let has_rules = ast::field(node, "body")
+        .is_some_and(|body| ast::named_children(body).any(|child| child.kind() == "switch_rule"));
+    let in_value_position = node.parent().is_some_and(|parent| {
+        matches!(
+            parent.kind(),
+            "variable_declarator"
+                | "assignment_expression"
+                | "return_statement"
+                | "argument_list"
+                | "parenthesized_expression"
+                | "binary_expression"
+                | "ternary_expression"
+                | "cast_expression"
+                | "lambda_expression"
+                | "array_initializer"
+                | "yield_statement"
+        )
+    });
+    has_rules || in_value_position
+}

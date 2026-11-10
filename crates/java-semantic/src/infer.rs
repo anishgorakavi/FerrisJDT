@@ -232,6 +232,9 @@ impl<'a> Inferer<'a> {
                 let left = ast::field(node, "consequence")
                     .map(|c| self.infer(c, depth + 1))
                     .unwrap_or(Type::Unknown);
+                if let Some(numeric) = self.numeric_ternary(node, &left, depth) {
+                    return numeric;
+                }
                 if !left.is_unknown() && !matches!(left, Type::Null) {
                     return left;
                 }
@@ -253,6 +256,34 @@ impl<'a> Inferer<'a> {
             "type_identifier" => Type::Unknown,
             _ => Type::Unknown,
         }
+    }
+
+    /// JLS 15.25.2: a `?:` whose operands are both numeric is a primitive. `cond ? 0 : aShort` is
+    /// `short` when the constant fits, and otherwise binary numeric promotion decides.
+    fn numeric_ternary(&self, node: Node<'_>, left: &Type, depth: u32) -> Option<Type> {
+        let consequence = ast::field(node, "consequence")?;
+        let alternative = ast::field(node, "alternative")?;
+        let right = self.infer(alternative, depth + 1);
+        let (a, b) = (self.numeric(left)?, self.numeric(&right)?);
+        if left == &right {
+            return Some(left.clone());
+        }
+        let fits = |narrow: Primitive, other: Node<'_>| {
+            let value = int_literal_value(other, self.text())?;
+            let (low, high) = match narrow {
+                Primitive::Byte => (-128, 127),
+                Primitive::Short => (-32768, 32767),
+                Primitive::Char => (0, 65535),
+                _ => return None,
+            };
+            (low..=high).contains(&value).then_some(narrow)
+        };
+        let narrowed = match (a, b) {
+            (narrow, Primitive::Int) => fits(narrow, alternative),
+            (Primitive::Int, narrow) => fits(narrow, consequence),
+            _ => None,
+        };
+        Some(Type::Primitive(narrowed.unwrap_or_else(|| a.promote(b))))
     }
 
     fn numeric(&self, ty: &Type) -> Option<Primitive> {
@@ -386,7 +417,11 @@ impl<'a> Inferer<'a> {
     }
 
     pub fn members_for(&self, ty: &Type, base: LookupOptions) -> Members {
-        members_of(self.db(), ty, self.lookup_options_for(ty, base))
+        let mut members = members_of(self.db(), ty, self.lookup_options_for(ty, base));
+        if let Some(class) = &self.ctx.class {
+            crate::members::apply_inherited_outer(self.db(), class, ty, &mut members);
+        }
+        members
     }
 
     /// Classifies the expression to the left of a `.`.
@@ -812,8 +847,8 @@ impl<'a> Inferer<'a> {
         Some(self.apply_type_arguments(chosen.clone(), node, &args, expected))
     }
 
-    /// Drops overloads whose functional-interface parameter takes a different
-    /// number of arguments than the lambda written there: `thenComparing(e -> ...)`
+    /// Drops overloads whose parameter cannot take the lambda written there, or whose
+    /// functional-interface parameter takes a different number of arguments: `thenComparing(e -> ...)`
     /// is the `Function` overload, not the `Comparator` one.
     pub fn narrow_by_lambda_arity<'m>(
         &self,
@@ -826,7 +861,7 @@ impl<'a> Inferer<'a> {
         let Some(list) = ast::field(node, "arguments") else {
             return candidates;
         };
-        let lambdas: Vec<(usize, usize, LambdaShape)> = ast::named_children(list)
+        let lambdas: Vec<(usize, usize, LambdaShape, Node<'_>)> = ast::named_children(list)
             .enumerate()
             .filter(|(_, argument)| argument.kind() == "lambda_expression")
             .map(|(index, lambda)| {
@@ -834,6 +869,7 @@ impl<'a> Inferer<'a> {
                     index,
                     scope::lambda_parameter_names(lambda, self.text()).len(),
                     lambda_shape(lambda),
+                    lambda,
                 )
             })
             .collect();
@@ -844,7 +880,7 @@ impl<'a> Inferer<'a> {
             .iter()
             .copied()
             .filter(|found| {
-                lambdas.iter().all(|(index, arity, shape)| {
+                lambdas.iter().all(|(index, arity, shape, _)| {
                     let Some(param) = found.method.params.get(*index) else {
                         return true;
                     };
@@ -853,16 +889,60 @@ impl<'a> Inferer<'a> {
                             function.method.params.len() == *arity
                                 && shape.fits(function.method.ret.is_void())
                         }
-                        None => true,
+                        // A lambda can only target a functional interface, so a class, array or
+                        // primitive parameter (`sign(Task...)`, `sign(Closure<?>)`) cannot take it.
+                        None => !matches!(
+                            param.ty,
+                            Type::Class { .. } | Type::Array(_) | Type::Primitive(_)
+                        ),
                     }
                 })
             })
             .collect();
         if narrowed.is_empty() {
-            candidates
-        } else {
-            narrowed
+            return candidates;
         }
+        self.prefer_by_lambda_result(narrowed, &lambdas)
+    }
+
+    /// A lone `() -> call()` fits both `Runnable` and `Factory<T>`; JLS 15.12.2.5 prefers the one
+    /// that returns a value, unless the call itself is void.
+    fn prefer_by_lambda_result<'m>(
+        &self,
+        candidates: Vec<&'m FoundMethod>,
+        lambdas: &[(usize, usize, LambdaShape, Node<'_>)],
+    ) -> Vec<&'m FoundMethod> {
+        let mut candidates = candidates;
+        for (index, arity, shape, lambda) in lambdas {
+            if *arity != 0 || *shape != LambdaShape::Either || candidates.len() < 2 {
+                continue;
+            }
+            let Some(body) = ast::field(*lambda, "body").filter(|b| b.kind() != "block") else {
+                continue;
+            };
+            let body_type = self.infer(body, 1);
+            if body_type.is_unknown() {
+                continue;
+            }
+            let wants_void = matches!(body_type, Type::Primitive(Primitive::Void));
+            let returns_void = |found: &&FoundMethod| {
+                found
+                    .method
+                    .params
+                    .get(*index)
+                    .and_then(|param| functional_interface_method(self.db(), &param.ty))
+                    .is_some_and(|function| function.method.ret.is_void())
+            };
+            let preferred: Vec<&FoundMethod> = candidates
+                .iter()
+                .filter(|found| returns_void(found) == wants_void)
+                .copied()
+                .collect();
+            if !preferred.is_empty() {
+                candidates = preferred;
+            }
+        }
+        candidates
     }
 
     /// Applies explicit or inferred method type arguments to a signature.
@@ -1343,4 +1423,22 @@ fn block_returns_value(node: Node<'_>) -> bool {
         "lambda_expression" | "class_body" | "object_creation_expression" => false,
         _ => block_returns_value(child),
     })
+}
+
+/// The value of an `int` literal operand, optionally negated or parenthesised.
+fn int_literal_value(node: Node<'_>, text: &str) -> Option<i64> {
+    match node.kind() {
+        "decimal_integer_literal" => ast::text(node, text).replace('_', "").parse().ok(),
+        "parenthesized_expression" => int_literal_value(ast::named_children(node).next()?, text),
+        "unary_expression" => {
+            let operand = ast::named_children(node).last()?;
+            let value = int_literal_value(operand, text)?;
+            match ast::text(node, text).trim_start().chars().next()? {
+                '-' => Some(-value),
+                '+' => Some(value),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }

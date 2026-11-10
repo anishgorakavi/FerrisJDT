@@ -78,7 +78,9 @@ fn collect_declaration_nodes<'t>(
     if let Some(&index) = wanted.get(&(node.start_byte() as u32)) {
         // An anonymous class is recorded at the `new` expression that declares
         // it, so that node counts as a declaration here too.
-        if outline::kind_of(node.kind()).is_some() || node.kind() == "object_creation_expression" {
+        if outline::kind_of(node.kind()).is_some()
+            || matches!(node.kind(), "object_creation_expression" | "enum_constant")
+        {
             out[index] = Some(node);
         }
     }
@@ -367,7 +369,32 @@ fn lower_class(
         // The written type keeps its arguments (`new Iterator<String>() {...}`), so inherited
         // members see `String` rather than the raw type's erasure.
         let base = match ast::field(node, "type") {
-            Some(written) => scope.lower_type(written, text),
+            Some(written) => {
+                let lowered = scope.lower_type(written, text);
+                // `new Base<>() {...}` takes its arguments from a context this layer does not
+                // track; unknown arguments keep members honest where the raw type's erasure
+                // would make `T` an `Object`.
+                let is_diamond = ast::named_children(written)
+                    .any(|c| c.kind() == "type_arguments" && ast::named_children(c).count() == 0);
+                match &lowered {
+                    Type::Class { name, args } if is_diamond && args.is_empty() => {
+                        // A class of this file is still being lowered, so its outline answers.
+                        let arity = match scope.outline.find(name) {
+                            Some(declared) => declared.type_params.len(),
+                            None => scope.db.class(name).map_or(0, |c| c.type_params.len()),
+                        };
+                        if arity == 0 {
+                            lowered
+                        } else {
+                            Type::Class {
+                                name: name.clone(),
+                                args: vec![Type::Unknown; arity],
+                            }
+                        }
+                    }
+                    _ => lowered,
+                }
+            }
             None => class
                 .anonymous_base
                 .as_deref()

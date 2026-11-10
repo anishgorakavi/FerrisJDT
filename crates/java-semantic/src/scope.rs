@@ -593,6 +593,13 @@ pub(crate) fn collect_block_locals(
         if statement.kind() == "local_variable_declaration" {
             collect_declaration(statement, text, scope, out);
         }
+        // A variable declared under one `case:` stays in scope for the groups after it. The
+        // group holding `offset` is the caller's own ancestor and is collected there.
+        if statement.kind() == "switch_block_statement_group"
+            && (statement.end_byte() as u32) <= offset
+        {
+            collect_block_locals(statement, u32::MAX, text, scope, out);
+        }
     }
 }
 

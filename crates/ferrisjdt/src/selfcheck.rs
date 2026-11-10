@@ -80,7 +80,18 @@ pub fn self_check(root: &Path, verbose: bool) -> i32 {
     let mut errors = 0usize;
     let mut warnings = 0usize;
     let mut reported: Vec<(String, String)> = Vec::new();
+    // FERRISJDT_SELFCHECK_ONLY keeps the files whose path contains it, so one file of a large
+    // project can be checked without paying for the rest.
+    let only = std::env::var("FERRISJDT_SELFCHECK_ONLY").ok();
     for file in db.all_files() {
+        if let Some(only) = &only {
+            let matches = db
+                .path(file)
+                .is_some_and(|p| p.to_string_lossy().contains(only));
+            if !matches {
+                continue;
+            }
+        }
         let items = java_ide::diagnostics::diagnostics(&db, file);
         for item in &items {
             match item.severity {

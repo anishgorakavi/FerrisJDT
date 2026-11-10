@@ -25,6 +25,12 @@ pub struct Inference<'d> {
     /// Variables bound to differing types, which were joined to a common
     /// supertype; their declared bounds are not re-checked against the join.
     joined: Vec<Name>,
+    /// Variables bound only from the type the call is expected to produce, an upper bound that an
+    /// argument's more specific type replaces rather than joins with.
+    from_expected: Vec<Name>,
+    /// Types an argument bounds a variable from above with (`Predicate<? super T>` given a
+    /// `Predicate<Number>`); they only name the variable when nothing else does.
+    upper_bounds: Vec<(Name, Type)>,
     /// When set, a binding is recorded only for a variable that has none.
     fill_only: bool,
 }
@@ -36,6 +42,8 @@ impl<'d> Inference<'d> {
             params: params.to_vec(),
             solved: Substitution::new(),
             joined: Vec::new(),
+            from_expected: Vec::new(),
+            upper_bounds: Vec::new(),
             fill_only: false,
         }
     }
@@ -93,6 +101,7 @@ impl<'d> Inference<'d> {
             return;
         }
         let was = std::mem::replace(&mut self.fill_only, true);
+        let before = self.solved.clone();
         match (declared_return, expected) {
             // The expected type only bounds the result from above, so it cannot fix a
             // variable whose declared bound it does not satisfy (`Object o = max(...)`
@@ -110,12 +119,26 @@ impl<'d> Inference<'d> {
                     view_as(self.db, declared_return, name)
                 {
                     for (declared, wanted) in viewed.iter().zip(args) {
+                        // `collect(toCollection(..))` expected as `Iterable<String>` passes that down
+                        // as the collector's result, which `C extends Collection<T>` may not accept.
+                        if let Type::Var(var) = declared {
+                            if !self.expected_fits_bounds(&var.name, wanted) {
+                                continue;
+                            }
+                        }
                         self.bind_at(declared, wanted, 1);
                     }
                 }
             }
             _ => {}
         }
+        let newly: Vec<Name> = self
+            .params
+            .iter()
+            .map(|param| param.name.clone())
+            .filter(|name| self.solved.get(name) != before.get(name))
+            .collect();
+        self.from_expected.extend(newly);
         self.fill_only = was;
     }
 
@@ -147,6 +170,29 @@ impl<'d> Inference<'d> {
                     }
                 }
             }
+            // `Action<? super T>` given an `Action<Repo>` only bounds `T` from above; it must not
+            // widen a `T` the other arguments or the expected type fixed.
+            Type::Wildcard {
+                kind: WildcardKind::Super,
+                bound: Some(bound),
+            } => match &**bound {
+                Type::Var(var) if self.is_ours(&var.name) => {
+                    let bound = match actual {
+                        Type::Wildcard {
+                            bound: Some(inner), ..
+                        } => (**inner).clone(),
+                        other => other.clone(),
+                    };
+                    if !bound.has_unknown() && matches!(bound, Type::Class { .. } | Type::Var(_)) {
+                        self.upper_bounds.push((var.name.clone(), bound));
+                    }
+                }
+                other => {
+                    let was = std::mem::replace(&mut self.fill_only, true);
+                    self.bind_at(other, actual, depth + 1);
+                    self.fill_only = was;
+                }
+            },
             Type::Wildcard {
                 bound: Some(bound), ..
             } => self.bind_at(bound, actual, depth + 1),
@@ -198,6 +244,12 @@ impl<'d> Inference<'d> {
                 self.solved.insert(name.clone(), candidate);
             }
             Some(_) if candidate.has_unknown() => {}
+            // What the arguments say wins over what the context merely allows; whether the two
+            // agree is the applicability check's question, not a reason to join them.
+            Some(_) if self.from_expected.contains(name) => {
+                self.from_expected.retain(|n| n != name);
+                self.solved.insert(name.clone(), candidate);
+            }
             Some(existing) => {
                 let joined = lub(self.db, &existing, &candidate);
                 self.joined.push(name.clone());
@@ -240,6 +292,17 @@ impl<'d> Inference<'d> {
             // A binding with unknown parts (`EvictingQueue<Unknown>`) is still closer to the truth
             // than the declared bound (`Collection<T>`), and diagnostics stand down on its unknowns.
             if self.solved.get(&param.name).is_some() {
+                continue;
+            }
+            let upper = self.upper_bounds.iter().find(|(name, ty)| {
+                *name == param.name
+                    && param
+                        .bounds
+                        .iter()
+                        .all(|bound| is_object(bound) || is_subtype(self.db, ty, &bound.erase()))
+            });
+            if let Some((_, ty)) = upper {
+                result.insert(param.name.clone(), ty.clone());
                 continue;
             }
             let fallback = match param.bounds.first() {

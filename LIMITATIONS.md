@@ -137,6 +137,10 @@ never offered; it is only the hand-written case that goes undiagnosed.
   project is compiled; the Neovim helper never compiles (running a downloaded
   project's annotation processors was not attempted), so generated types of an
   uncompiled project are unknown.
+* **Groovy and Kotlin sources are not read.** In a Gradle project with both (Gradle itself), types
+  declared only in `.groovy` or `.kt` files are unknown, so the Java that uses them reports
+  `cannot find type`. The client lists only each source set's Java directories; when it lists any,
+  FerrisJDT no longer also scans the whole tree.
 * **A Gradle project is one flat classpath.** Every module's and source set's
   compile classpath is merged, so a class that exists only in another
   module's dependencies resolves where javac would reject it.
